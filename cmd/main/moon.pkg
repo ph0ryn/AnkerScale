@@ -1,0 +1,5 @@
+// import {
+//   "ph0ryn/ankerscale" @lib,
+// }
+
+pkgtype(kind: "executable")
