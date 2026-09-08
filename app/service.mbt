@@ -158,7 +158,7 @@ fn service(options : Options) -> Unit raise {
         if registry.source == "legacy" {
           write_registry(registry, registry.devices)
         }
-        if status != "enabled" && status != "requires_approval" {
+        if status != "requires_approval" {
           ignore(os("service_register"))
         }
       })

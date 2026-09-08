@@ -219,13 +219,21 @@ raw・診断ログの自動削除は行いません。保持期間は実運用�
 
 ## 常駐と権限
 
-Service Managementの `SMAppService` でユーザーのLaunchAgentを登録します。
+`~/Library/LaunchAgents/com.ph0ryn.AnkerScale.collector.plist` を生成し、
+`launchctl bootstrap` でユーザーのLaunchAgentを登録します。
+実行するバンドル内バイナリの絶対パスを `Program` に保存します。
+旧 `SMAppService` 登録は個別に解除して移行します。
+macOS 27で旧方式の起動制約がビルド更新後に残り、起動を拒否するケースを実機で確認したためです。
+システム全体のBTMリセットやDeveloper ID証明書は必要ありません。
 `service start` は登録一覧を検証して常駐を登録します。
 稼働中の機器追加・解除には再起動を必要としません。
 `service stop` はlaunchdの対象ジョブへSIGTERMを送り、
 書き手の終了を最大10秒待ってから登録を解除します。
 終了を確認できない場合はエラーにし、強制終了で成功扱いしません。
 `service stop` は機器の登録一覧を削除しません。
+停止後は `launchctl bootout` と生成したplistの削除を行います。
+ビルドを更新した場合は一度停止してから起動します。稼働中の登録先変更はエラーにします。
+同じビルドへの再度の `start` は、稼働中のプロセスを維持します。
 全台解除後にlaunchdが再起動した場合も、内部の `service run` は空の登録一覧で待機できます。
 
 LaunchAgentはログイン中だけ動き、異常終了時には間隔を置いて再起動します。
