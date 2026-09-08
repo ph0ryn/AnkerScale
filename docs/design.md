@@ -205,8 +205,8 @@ raw・診断ログの自動削除は行いません。保持期間は実運用�
 - 測定出力のキーは `id`、`device_id`、`received_at`、`measured_at`、
   `weight_centi_kg`、`impedance`、`encrypted_impedance`、`fat_mode`、`origin`、`raw_id` です。
 - CSVはヘッダー付きで同じ列を使い、NULLは空欄、文字列は引用・エスケープします。
-- `logs` はrawと収集イベントを合わせた新しい順のJSONLです。
-  `source`、`received_at`、`kind`、`detail` を返します。
+- `logs` はrawと収集イベントを合わせて新しい順のテキストで表示します。
+  `logs --json` は `source`、`received_at`、`kind`、`detail` を持つJSONLを返します。
 - `--db` は収集・記録参照・replayで指定できます。常駐収集は既定DBを使います。
 - 通常の結果は標準出力、診断は標準エラーへ出します。
 - 終了コードは成功が0、実行・保存エラーが1、引数エラーが2です。
@@ -230,6 +230,11 @@ Service Managementの `SMAppService` でユーザーのLaunchAgentを登録し�
 
 LaunchAgentはログイン中だけ動き、異常終了時には間隔を置いて再起動します。
 rootのLaunchDaemonは使用しません。
+`service` と `logs` は既定で人向けのテキストを表示し、`--json` で従来の構造化出力を返します。
+`service start` は起動完了を待たず、プロセス未確認と停止状態を表示上区別します。
+収集中の通常診断は日時付きのテキスト、DBの診断は構造化データとして保存します。
+保存失敗時の未保存イベントは、復旧に必要なJSONを診断ログへ残します。
+
 `service status` は登録状態、書き手ロック、最後の保存、最後の診断を分けて表示します。
 `devices` には機器ごとの `phase`、時刻付きの `last_state` と `last_error` を返します。
 状態は既存の `state` / `device_error` イベントから読み、書き手がいなければ `Inactive` とします。

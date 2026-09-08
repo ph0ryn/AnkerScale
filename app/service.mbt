@@ -1,5 +1,5 @@
 ///|
-fn service_status() -> Unit raise {
+fn service_status(options : Options) -> Unit raise {
   let registry = read_registry()
   let probe = os("service_probe")
   let active : Bool = @json.from_json(field(probe, "writer_active"))
@@ -22,6 +22,8 @@ fn service_status() -> Unit raise {
       result
     })
     .to_json()
+  values["last_saved"] = Json::null()
+  values["last_event"] = Json::null()
   if @json.from_json(field(probe, "database_exists")) {
     let path = string_field(probe, "database")
     with_db(path, writable=false, db => {
@@ -97,15 +99,24 @@ fn service_status() -> Unit raise {
     }) catch {
       error => {
         values["storage_error"] = error.to_string().to_json()
-        println(values.to_json().stringify())
+        println(
+          if options.json {
+            values.to_json().stringify()
+          } else {
+            service_text(values.to_json(), options.positional[0])
+          },
+        )
         raise DataError("cannot inspect storage: \{error}")
       }
     }
-  } else {
-    values["last_saved"] = Json::null()
-    values["last_event"] = Json::null()
   }
-  println(values.to_json().stringify())
+  println(
+    if options.json {
+      values.to_json().stringify()
+    } else {
+      service_text(values.to_json(), options.positional[0])
+    },
+  )
 }
 
 ///|
@@ -115,7 +126,7 @@ fn service(options : Options) -> Unit raise {
   }
   let command = options.positional[0]
   match command {
-    "status" => service_status()
+    "status" => service_status(options)
     "start" => {
       with_registry_lock(() => {
         let registry = read_registry()
@@ -138,7 +149,7 @@ fn service(options : Options) -> Unit raise {
           ignore(os("service_register"))
         }
       })
-      service_status()
+      service_status(options)
     }
     "stop" => {
       let probe = os("service_probe")
@@ -160,7 +171,7 @@ fn service(options : Options) -> Unit raise {
         }
         ignore(os("service_unregister"))
       }
-      service_status()
+      service_status(options)
     }
     "run" => {
       ignore(os("service_log"))

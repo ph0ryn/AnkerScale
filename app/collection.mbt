@@ -147,7 +147,9 @@ fn Collection::log_state(
     "error": error,
   }
   event_log(self.db, self.run_id, "state", detail)
-  @native.stderr(detail.stringify())
+  @native.stderr(
+    "\{string_field(os("now"), "utc")}  \{diagnostic_text("state", detail)}",
+  )
 }
 
 ///|
@@ -225,17 +227,15 @@ fn Collection::execute(
           "attempt": attempt,
           "message": error.to_string(),
         }
-        event_log(
-          self.db,
-          self.run_id,
-          if device.is_empty() {
-            "command_error"
-          } else {
-            "device_error"
-          },
-          detail,
+        let kind = if device.is_empty() {
+          "command_error"
+        } else {
+          "device_error"
+        }
+        event_log(self.db, self.run_id, kind, detail)
+        @native.stderr(
+          "\{string_field(os("now"), "utc")}  \{diagnostic_text(kind, detail)}",
         )
-        @native.stderr(detail.stringify())
         let recovery = match command {
           Scan => self.controller.handle(Failed, "", 0, now)
           Device(_, _, Disconnect) | StopScan =>

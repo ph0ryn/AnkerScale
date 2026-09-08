@@ -9,9 +9,9 @@ let help : String =
   #|  ankerscale latest [--db PATH] [--json]
   #|  ankerscale history [--since DATE] [--until DATE] [--device UUID] [--limit 100] [--json] [--db PATH]
   #|  ankerscale export --format csv|json [--since DATE] [--until DATE] [--device UUID] [--db PATH]
-  #|  ankerscale logs [--limit 100] [--db PATH]
-  #|  ankerscale service start
-  #|  ankerscale service stop|status
+  #|  ankerscale logs [--limit 100] [--db PATH] [--json]
+  #|  ankerscale service start [--json]
+  #|  ankerscale service stop|status [--json]
   #|  ankerscale replay FILE.jsonl --db PATH
   #|
   #|Dates use UTC. --since is inclusive; --until is exclusive.
@@ -45,7 +45,11 @@ fn parse_options(args : Array[String]) -> Options raise {
   let spec = @argparse.Command(
     "ankerscale \{command}",
     options=allowed.map(flag => @argparse.OptionArg(flag[2:], long=flag[2:])),
-    flags=if command == "latest" || command == "history" || command == "devices" {
+    flags=if command == "latest" ||
+      command == "history" ||
+      command == "devices" ||
+      command == "service" ||
+      command == "logs" {
       [@argparse.FlagArg("json", long="json")]
     } else {
       []
@@ -307,7 +311,13 @@ pub fn run(args : Array[String]) -> Unit raise {
           ) {
           let record : Map[String, Json] = @json.from_json(row)
           record["detail"] = @json.parse(string_field(row, "detail"))
-          println(record.to_json().stringify())
+          println(
+            if options.json {
+              record.to_json().stringify()
+            } else {
+              "\{string_field(row, "received_at")}  \{diagnostic_text(string_field(row, "kind"), record["detail"])}"
+            },
+          )
         }
       })
     _ => raise UsageError("unknown command: \{options.command}")
