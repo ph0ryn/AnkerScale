@@ -29,6 +29,12 @@ pub(all) enum Action {
   Disconnect
 } derive(Eq, @debug.Debug)
 
+pub(all) enum CollectionCommand {
+  Scan
+  StopScan
+  Device(String, Int, Action)
+} derive(Eq, @debug.Debug)
+
 pub(all) enum CollectionEvent {
   PoweredOn
   PoweredOff
@@ -43,6 +49,18 @@ pub(all) enum CollectionEvent {
   Tick
   Stop
 } derive(Eq, @debug.Debug)
+
+pub struct Collector {
+  controllers : Map[String, Controller]
+  mut stopping : Bool
+  mut failure : String?
+  // private fields
+}
+pub fn Collector::handle(Self, CollectionEvent, String, Int, Double) -> Array[CollectionCommand]
+pub fn Collector::new(Array[String]) -> Self
+pub fn Collector::stopped(Self) -> Bool
+pub fn Collector::update_devices(Self, Array[String], Double) -> Array[CollectionCommand]
+pub fn Collector::wait_ms(Self, Double) -> Int
 
 pub struct Controller {
   target : String
