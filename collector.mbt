@@ -48,6 +48,7 @@ pub struct Controller {
   mut phase : Phase
   mut attempt : Int
   mut failure : String?
+  mut last_error : String?
   mut deadline : Double
   mut subscribed_at : Double
   mut write_step : Int
@@ -62,6 +63,7 @@ pub fn Controller::new(target : String) -> Controller {
     phase: WaitingPower,
     attempt: 0,
     failure: None,
+    last_error: None,
     deadline: 0,
     subscribed_at: 0,
     write_step: 0,
@@ -131,6 +133,7 @@ pub fn Controller::handle(
     Found(device) => {
       if self.phase == Scanning && device == self.target {
         self.phase = Connecting
+        self.last_error = None
         self.attempt += 1
         self.deadline = now + 10000
         return [StopScan, Connect(device, self.attempt)]
@@ -223,6 +226,15 @@ pub fn Controller::handle(
         self.phase == Measuring {
         if now >= self.deadline ||
           (self.phase == Measuring && now - self.subscribed_at >= 120000) {
+          if self.phase != Measuring {
+            self.last_error = Some(
+              match self.phase {
+                Connecting => "Connecting timed out"
+                Discovering => "GATT discovery timed out"
+                _ => "Notification subscription timed out"
+              },
+            )
+          }
           self.phase = Disconnecting
           self.deadline = now + 5000
           return [Disconnect]

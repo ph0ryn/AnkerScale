@@ -67,6 +67,7 @@ pub struct Controller {
   mut phase : Phase
   mut attempt : Int
   mut failure : String?
+  mut last_error : String?
   mut deadline : Double
   mut subscribed_at : Double
   mut write_step : Int

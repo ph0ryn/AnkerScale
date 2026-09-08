@@ -45,6 +45,7 @@ test "connection timeout cancels before bounded retry" {
   ignore(c.handle(PoweredOn, 0, 0))
   ignore(c.handle(Found("device"), 0, 1))
   assert_eq(c.handle(Tick, 1, 10001), [Disconnect])
+  assert_eq(c.last_error, Some("Connecting timed out"))
   assert_eq(c.handle(Disconnected, 1, 10002), [])
   assert_eq(c.handle(Tick, 1, 11002), [Scan])
 }
