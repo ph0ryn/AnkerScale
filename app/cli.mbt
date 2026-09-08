@@ -13,7 +13,7 @@ let help : String =
   #|  ankerscale profile correct [ID] [--birth-date DATE] [--sex male|female] [--height-cm CM] [--mode normal|athlete] [--db PATH]
   #|  ankerscale collect [--db PATH]
   #|  ankerscale latest [--db PATH] [--json]
-  #|  ankerscale history [--since DATE] [--until DATE] [--device UUID] [--limit 100] [--json] [--db PATH]
+  #|  ankerscale history [--since DATE] [--until DATE] [--device UUID] [--limit 100] [--all | --columns LIST] [--json] [--db PATH]
   #|  ankerscale export --format csv|json [--since DATE] [--until DATE] [--device UUID] [--db PATH]
   #|  ankerscale logs [--limit 100] [--db PATH] [--json]
   #|  ankerscale service start [--json]
@@ -23,6 +23,8 @@ let help : String =
   #|--since is inclusive; --until is exclusive. Date-only filters use the configured timezone.
   #|Explicit Z timestamps, JSON and CSV use UTC. Live measurements have no device timestamp.
   #|Replay writes explicit test data; use a separate database.
+  #|History columns: weight,bmi,body-fat,water,muscle-rate,bone-rate,bmr,visceral-fat,lean,fat,bone,muscle.
+  #|Default: weight,bmi,body-fat,muscle. Dates are always shown. --all/--columns are text-only.
 
 ///|
 priv struct Options {
@@ -38,7 +40,8 @@ fn parse_options(args : Array[String]) -> Options raise {
   let values : Map[String, String] = Map([])
   let allowed = match command {
     "latest" => ["--db"]
-    "history" => ["--db", "--since", "--until", "--device", "--limit"]
+    "history" =>
+      ["--db", "--since", "--until", "--device", "--limit", "--columns"]
     "export" => ["--db", "--since", "--until", "--device", "--format"]
     "logs" => ["--db", "--limit"]
     "replay" => ["--db"]
@@ -50,13 +53,36 @@ fn parse_options(args : Array[String]) -> Options raise {
   }
   let spec = @argparse.Command(
     "ankerscale \{command}",
-    options=allowed.map(flag => @argparse.OptionArg(flag[2:], long=flag[2:])),
+    options=allowed.map(flag => {
+      @argparse.OptionArg(
+        flag[2:],
+        long=flag[2:],
+        about=if flag == "--columns" {
+          "Comma-separated metrics in display order (text only); see ankerscale --help for names"
+        } else {
+          ""
+        },
+      )
+    }),
     flags=if command == "latest" ||
       command == "history" ||
       command == "devices" ||
       command == "service" ||
       command == "logs" {
-      [@argparse.FlagArg("json", long="json")]
+      [
+        @argparse.FlagArg("json", long="json"),
+        ..if command == "history" {
+          [
+            @argparse.FlagArg(
+              "all",
+              long="all",
+              about="Show all 12 measurements (text only)",
+            ),
+          ]
+        } else {
+          []
+        },
+      ]
     } else {
       []
     },
@@ -82,7 +108,13 @@ fn parse_options(args : Array[String]) -> Options raise {
   }
   let positional = parsed.values.get_or_default("argument", [])
   let json = parsed.flags.get_or_default("json", false)
+  if parsed.flags.get_or_default("all", false) {
+    values["--all"] = "true"
+  }
   let options = { command, positional, values, json, }
+  if command == "history" {
+    ignore(history_columns(options))
+  }
   for key in ["--since", "--until"] {
     if values.get(key) is Some(value) {
       values[key] = filter_date(value)
@@ -134,6 +166,9 @@ fn required(options : Options, key : String) -> String raise {
 
 ///|
 fn history(db : @native.Database, options : Options) -> Unit raise {
+  db.exec("BEGIN")
+  defer db.exec("ROLLBACK")
+  let profiles = MeasurementProfiles::load(db)
   let mut where_sql = " WHERE 1=1"
   let params : Array[Json] = []
   for
@@ -166,12 +201,8 @@ fn history(db : @native.Database, options : Options) -> Unit raise {
     " ORDER BY r.received_at,m.id"
   }
   if exporting {
-    db.exec("BEGIN")
-    errdefer db.exec("ROLLBACK")
     if format == "csv" {
-      println(
-        "id,device_id,received_at,measured_at,weight_centi_kg,impedance,encrypted_impedance,fat_mode,origin,raw_id",
-      )
+      println(measurement_keys.join(","))
     } else {
       println("[")
     }
@@ -183,6 +214,7 @@ fn history(db : @native.Database, options : Options) -> Unit raise {
         args=params + [offset.to_json()],
       )
       for row in rows {
+        let row = profiles.enrich(row)
         if format == "csv" {
           println(csv(row))
         } else {
@@ -201,12 +233,13 @@ fn history(db : @native.Database, options : Options) -> Unit raise {
     if format == "json" {
       println("]")
     }
-    db.exec("COMMIT")
   } else {
-    let rows = db.query(
-      query + order + " LIMIT ?",
-      args=params + [(if latest { 1 } else { limit(options) }).to_json()],
-    )
+    let rows = db
+      .query(
+        query + order + " LIMIT ?",
+        args=params + [(if latest { 1 } else { limit(options) }).to_json()],
+      )
+      .map(row => profiles.enrich(row))
     if options.json {
       println(
         (if latest {
@@ -223,10 +256,20 @@ fn history(db : @native.Database, options : Options) -> Unit raise {
       println("No measurements.")
     } else {
       let timezone = read_timezone()
+      let format_date = value => display_date(value, timezone)
       println(
-        measurement_table(rows, timezone~, format_date=value => {
-          display_date(value, timezone)
-        }),
+        if latest {
+          measurement_detail(rows[0], format_date~)
+        } else {
+          let columns = if !options.values.contains("--all") &&
+            !options.values.contains("--columns") &&
+            !rows.any(row => !(field(row, "profile_id") is Null)) {
+            [measurement_columns[0]]
+          } else {
+            history_columns(options)
+          }
+          measurement_table(rows, timezone~, columns~, format_date~)
+        },
       )
     }
   }
@@ -234,11 +277,7 @@ fn history(db : @native.Database, options : Options) -> Unit raise {
 
 ///|
 fn csv(row : Json) -> String raise {
-  let fields = [
-    "id", "device_id", "received_at", "measured_at", "weight_centi_kg", "impedance",
-    "encrypted_impedance", "fat_mode", "origin", "raw_id",
-  ]
-  let parts = fields.map(key => {
+  let parts = measurement_keys.map(key => {
     match field(row, key) {
       Null => ""
       String(value) => "\"" + value.replace(old="\"", new="\"\"") + "\""

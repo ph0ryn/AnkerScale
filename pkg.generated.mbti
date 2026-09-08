@@ -6,6 +6,10 @@ import {
 }
 
 // Values
+pub fn body_composition(Reading, Int, Int, male~ : Bool, athlete~ : Bool) -> Result[BodyComposition, String]
+
+pub fn decode_impedance(Int) -> Int
+
 pub fn parse_t9120(Bytes) -> Packet
 
 pub fn time_command(Int, Int, Int, Int, Int, Int) -> Bytes
@@ -27,6 +31,20 @@ pub(all) enum Action {
   SetTime
   RequestHistory
   Disconnect
+} derive(Eq, @debug.Debug)
+
+pub(all) struct BodyComposition {
+  bmi : Int
+  body_fat : Int
+  water : Int
+  muscle_rate : Int
+  bone_rate : Int
+  basal_metabolism : Int
+  visceral_fat : Int
+  lean_mass : Int
+  fat_mass : Int
+  bone_mass : Int
+  muscle_mass : Int
 } derive(Eq, @debug.Debug)
 
 pub(all) enum CollectionCommand {

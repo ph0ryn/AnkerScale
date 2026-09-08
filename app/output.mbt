@@ -119,27 +119,163 @@ fn service_text(
 fn measurement_table(
   rows : Array[Json],
   timezone? : Int = 0,
+  columns~ : Array[MeasurementColumn],
   format_date? : (String) -> String raise = value => value,
 ) -> String raise {
   let headers = [
-    "Received (UTC\{timezone_text(timezone)})",
-    "Weight (kg)",
-    "Impedance",
-    "Device",
-    "Origin",
+    "Date (UTC\{timezone_text(timezone)})",
+    ..columns.map(column => column.label),
   ]
   let cells = rows.map(row => {
-    let weight : Int = @json.from_json(field(row, "weight_centi_kg"))
-    let impedance : Int = @json.from_json(field(row, "impedance"))
     [
       format_date(string_field(row, "received_at")),
-      @protocol.weight_text(weight),
-      impedance.to_string(),
-      string_field(row, "device_id"),
-      string_field(row, "origin"),
+      ..columns.map(column => measurement_value(row, column)),
     ]
   })
-  text_table(headers, cells, right_aligned=[1, 2])
+  let reasons : Array[String] = []
+  for row in rows {
+    if field(row, "composition_error") is String(reason) &&
+      !reasons.contains(reason) {
+      reasons.push(reason)
+    }
+  }
+  text_table(
+    headers,
+    cells,
+    right_aligned=Array::makei(columns.length(), i => i + 1),
+  ) +
+  (if reasons.is_empty() {
+    ""
+  } else {
+    let marker = if columns.any(column => column.name != "weight") {
+      " (—)"
+    } else {
+      ""
+    }
+    "\nBody composition unavailable\{marker}: " + reasons.join("; ") + "."
+  })
+}
+
+///|
+priv struct MeasurementColumn {
+  name : String
+  key : String
+  label : String
+  decimals : Int
+}
+
+///|
+let measurement_columns : Array[MeasurementColumn] = [
+  { name: "weight", key: "weight_centi_kg", label: "Weight (kg)", decimals: 2, },
+  { name: "bmi", key: "bmi", label: "BMI", decimals: 1, },
+  {
+    name: "body-fat",
+    key: "body_fat_percent",
+    label: "Body fat (%)",
+    decimals: 1,
+  },
+  { name: "water", key: "water_percent", label: "Water (%)", decimals: 1, },
+  {
+    name: "muscle-rate",
+    key: "muscle_percent",
+    label: "Muscle (%)",
+    decimals: 1,
+  },
+  { name: "bone-rate", key: "bone_percent", label: "Bone (%)", decimals: 1, },
+  {
+    name: "bmr",
+    key: "basal_metabolism_kcal",
+    label: "BMR (kcal/day)",
+    decimals: 0,
+  },
+  {
+    name: "visceral-fat",
+    key: "visceral_fat_level",
+    label: "Visceral fat (level)",
+    decimals: 0,
+  },
+  { name: "lean", key: "lean_mass_kg", label: "Lean mass (kg)", decimals: 1, },
+  { name: "fat", key: "fat_mass_kg", label: "Fat (kg)", decimals: 1, },
+  { name: "bone", key: "bone_mass_kg", label: "Bone (kg)", decimals: 1, },
+  { name: "muscle", key: "muscle_mass_kg", label: "Muscle (kg)", decimals: 1, },
+]
+
+///|
+fn history_columns(options : Options) -> Array[MeasurementColumn] raise {
+  let all = options.values.contains("--all")
+  let selected = options.values.get("--columns")
+  if all && selected is Some(_) {
+    raise UsageError("use either --all or --columns")
+  }
+  if options.json && (all || selected is Some(_)) {
+    raise UsageError(
+      "--all and --columns apply only to text output; --json includes all fields",
+    )
+  }
+  if all {
+    return measurement_columns
+  }
+  let names = match selected {
+    None => ["weight", "bmi", "body-fat", "muscle"]
+    Some(value) =>
+      value.split(",").map(part => part.trim().to_owned()).collect()
+  }
+  let columns : Array[MeasurementColumn] = []
+  for name in names {
+    let column = match
+      measurement_columns.iter().find_first(column => column.name == name) {
+      None =>
+        raise UsageError(
+          "unknown column '\{name}'; choose from " +
+          measurement_columns.map(column => column.name).join(","),
+        )
+      Some(column) => column
+    }
+    if columns.any(column => column.name == name) {
+      raise UsageError("duplicate column: \{name}")
+    }
+    columns.push(column)
+  }
+  columns
+}
+
+///|
+fn measurement_value(row : Json, column : MeasurementColumn) -> String raise {
+  let value = field(row, column.key)
+  if value is Null {
+    return "—"
+  }
+  if column.decimals == 2 {
+    @protocol.weight_text(@json.from_json(value))
+  } else {
+    let number : Double = @json.from_json(value)
+    if column.decimals == 0 {
+      number.to_int().to_string()
+    } else {
+      let tenths = (number * 10.0).round().to_int()
+      "\{if tenths < 0 { "-" } else { "" }}\{Int::abs(tenths) / 10}.\{Int::abs(tenths) % 10}"
+    }
+  }
+}
+
+///|
+fn measurement_detail(
+  row : Json,
+  format_date? : (String) -> String raise = value => value,
+) -> String raise {
+  let lines = ["Received: \{format_date(string_field(row, "received_at"))}"]
+  let columns = if field(row, "composition_error") is String(_) {
+    [measurement_columns[0]]
+  } else {
+    measurement_columns
+  }
+  for column in columns {
+    lines.push("\{column.label}: \{measurement_value(row, column)}")
+  }
+  if field(row, "composition_error") is String(reason) {
+    lines.push("Body composition unavailable: \{reason}.")
+  }
+  lines.join("\n")
 }
 
 ///|

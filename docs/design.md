@@ -26,6 +26,8 @@ launchd（ユーザーのLaunchAgent）
 | ファイル・パッケージ | 責任 |
 | --- | --- |
 | `ankerscale.mbt` | T9120パケット解析、コマンド生成、整数体重の表示 |
+| `bodyComposition.mbt` | BestHealthのインピーダンス復号、12項目のうち11派生値の純粋計算 |
+| `app/measurements.mbt` / `app/output.mbt` | 測定時点のプロファイル付加、派生値の出力、表示項目の選択 |
 | `collector.mbt` | 機器ごとの接続状態遷移、期限、再試行 |
 | `collection.mbt` | 共有スキャン、登録の反映、機器へのイベント配送、全体停止 |
 | `app/data.mbt` | スキーマ、トランザクション、rawと確定測定、重複判定 |
@@ -204,6 +206,12 @@ raw・診断ログの自動削除は行いません。保持期間は実運用�
   `history` / `export` の `--device` は検索条件として維持します。
 - `latest` は受信日時が最も新しい1件を返します。
 - `history` は受信日時の降順で既定100件を返します。`--limit` は1〜10000です。
+- `latest` の通常表示は日時と全12項目の縦表示です。
+  `history` は日時・体重・BMI・体脂肪率・筋肉量を既定列にします。
+  `--all` で全項目、`--columns` でカンマ区切りの項目を指定順に表示します。日時は必ず残します。
+  列名は `weight,bmi,body-fat,water,muscle-rate,bone-rate,bmr,visceral-fat,lean,fat,bone,muscle` です。
+  不明・空・重複した列名、両オプションの併用、`--json` との組み合わせは引数エラーです。
+  取得元・impedance・機器IDは `latest`・`history` の通常表示に含めません。
 - `export --format csv|json` は条件に合う全件を受信日時の昇順で出力します。
 - `--since` は境界を含み、`--until` は含みません。
 - 日時は `YYYY-MM-DD`、UTCの `YYYY-MM-DDTHH:mm:ssZ` またはミリ秒3桁付きです。
@@ -220,6 +228,10 @@ raw・診断ログの自動削除は行いません。保持期間は実運用�
   空の履歴は成功として扱い、人向けには `No measurements.` と表示します。
 - 測定出力のキーは `id`、`device_id`、`received_at`、`measured_at`、
   `weight_centi_kg`、`impedance`、`encrypted_impedance`、`fat_mode`、`origin`、`raw_id` です。
+- JSON／CSVでは元のキーを維持し、`bmi`、`body_fat_percent`、`water_percent`、
+  `muscle_percent`、`bone_percent`、`basal_metabolism_kcal`、`visceral_fat_level`、
+  `lean_mass_kg`、`fat_mass_kg`、`bone_mass_kg`、`muscle_mass_kg` と、
+  `profile_id`、`composition_age`、`composition_method`、`composition_error` を追加します。
 - CSVはヘッダー付きで同じ列を使い、NULLは空欄、文字列は引用・エスケープします。
 - `logs` はrawと収集イベントを合わせて新しい順のテキストで表示します。
   `logs --json` は `source`、`received_at`、`kind`、`detail` を持つJSONLを返します。
@@ -257,7 +269,21 @@ raw・診断ログの自動削除は行いません。保持期間は実運用�
   最後の期間の `until` は `null` です。参照は一つの読み取りスナップショットで行います。
 - 全プロファイルコマンドが `--db PATH` に対応します。保存完了後に短い結果を出力します。
   誤った引数は終了コード2で拒否し、プロファイルの変更はロールバックします。
-- 体組成計算と測定出力へのプロファイル付加は未実装です。測定・rawの記録は設定の有無に依存しません。
+- 測定・rawの記録は設定の有無に依存しません。体組成は参照時に計算し、DBへ重複保存しません。
+  `measured_at` があればその時刻、なければ `received_at` の有効期間を使います。
+  計算年齢は対象のUTC年−生年です。最新設定で過去の測定を一括計算し直しません。
+  `profile correct` による訂正や計算実装の更新は、過去の表示・エクスポートにも反映されます。
+  測定とプロファイルは一つの読み取りスナップショットで取得します。
+- 現行の測定はT9120に限定されているため、計算方式は `besthealth-v1` です。
+  float32の演算・途中整数化・固定条件の上書きは計算資料に従います。
+  計算できない場合は全派生値をJSONの `null`／CSVの空欄／通常表示の `—` とし、
+  `composition_error` と通常表示に理由を付けます。体重はそのまま表示します。
+  プロファイル自体がなければIDと年齢も `null` です。DB版1の参照では移行せず同様に扱います。
+- プロファイル未設定では `Profile is unset.` と設定方法を表示します。
+  `latest` は計算できない場合に日時と体重だけを表示します。
+  `history` は全行に適用プロファイルがなければ日時と体重だけにします。
+  計算できる行と混在する場合は列を維持し、欠損値を `—` にします。
+  明示した `--all`・`--columns` は簡易表示より優先します。
 
 ## 常駐と権限
 

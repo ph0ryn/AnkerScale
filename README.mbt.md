@@ -61,14 +61,21 @@ rawと測定値は同じトランザクションで保存し、重複・未知�
 ```sh
 ./result/bin/ankerscale latest
 ./result/bin/ankerscale history --since 2026-09-01
+./result/bin/ankerscale history --all
+./result/bin/ankerscale history --columns weight,body-fat,muscle,water
 ./result/bin/ankerscale history --since 2026-09-01 --json
 ./result/bin/ankerscale export --format csv > measurements.csv
 ./result/bin/ankerscale logs
 ```
 
-`latest` と `history` の通常出力は表形式です。
-受信日時・体重（kg）・impedance・機器ID・取得元を表示します。
-`encrypted_impedance` は表には表示せず、`--json` とCSV／JSONエクスポートに含めます。
+`latest` は受信日時と全12項目を縦に表示します。
+`history` は受信日時・体重・BMI・体脂肪率・筋肉量の表です。
+`--all` で全12項目、`--columns` で指定した項目を指定順に表示します。日時は常に表示します。
+列名は `weight,bmi,body-fat,water,muscle-rate,bone-rate,bmr,visceral-fat,lean,fat,bone,muscle` です。
+`body-fat` は体脂肪率、`fat` は脂肪量、`muscle` は筋肉量、`bone` は骨量です。
+`--all` と `--columns` は通常表示専用で、併用や `--json` との組み合わせはできません。
+機器ID・取得元・impedanceなどの内部値は `latest`・`history` の通常表示から省き、
+`--json` とCSV／JSONエクスポートに残します。
 
 日時の表示と履歴検索の日付指定に使うUTCオフセットを設定できます。
 
@@ -137,7 +144,18 @@ Ctrl+DまたはCtrl+Cで保存せずに取り消せます。設定済みの場�
 適用日時・参照日時はUTCです。日付だけの指定はUTCの午前0時を表します。
 生年月日は `YYYY-MM-DD` 形式です。2月29日生まれの満年齢は、平年では3月1日に増えます。
 設定がない期間の参照は `--json` では `null` を返します。
-プロファイルは保存・参照のみで、体組成の計算や測定値への付加はまだ行いません。
+測定時点で有効なプロファイルを使い、参照時に体組成を計算します。
+現行のライブ測定には測定日時がないため、受信日時を基準にします。
+計算用の年齢は対象のUTC年から生年を引いた値で、上記の表示用の満年齢とは異なります。
+プロフィールを訂正すると該当期間の計算結果も変わります。計算結果はDBへ重複保存しません。
+プロフィール未設定なら `Profile is unset.` と案内します。
+`latest` は計算できない場合、日時と体重だけを表示し、理由を添えます。
+`history` も全件に適用プロフィールがなければ日時と体重の簡易表示にします。
+計算できる測定と混在する場合は列を維持し、欠損値を `—` と表示します。
+明示した `--all`・`--columns` は簡易表示より優先します。
+JSON／CSVには全計算値と `profile_id`、`composition_age`、`composition_method`、
+`composition_error` を含めます。計算できない値はJSONでは `null`、CSVでは空欄です。
+計算式と丸め方は[体組成の計算](docs/protocol/bodyComposition.md)を参照してください。
 
 ## 常駐管理
 
