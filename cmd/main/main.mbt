@@ -1,7 +1,14 @@
 ///|
-/// Entry point for the CLI or runnable program in this template.
-/// Keep main focused; move logic into the library package.
-/// Run with `moon run cmd/main` from the project root.
 fn main {
-  println("Hello")
+  let args = @env.args()
+  @app.run(args[1:].to_owned()) catch {
+    @app.UsageError(message) => {
+      @native.stderr(message)
+      @native.exit(2)
+    }
+    error => {
+      @native.stderr(error.to_string())
+      @native.exit(1)
+    }
+  }
 }

@@ -1,0 +1,28 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "ph0ryn/ankerscale/app"
+
+import {
+  "moonbitlang/core/debug",
+  "moonbitlang/core/json",
+}
+
+// Values
+pub fn run(Array[String]) -> Unit raise
+
+// Errors
+pub suberror DataError {
+  DataError(String)
+} derive(@debug.Debug)
+pub impl Show for DataError
+
+pub suberror UsageError {
+  UsageError(String)
+} derive(@debug.Debug)
+pub impl Show for UsageError
+
+// Types and methods
+type Incoming derive(@json.FromJson)
+
+// Type aliases
+
+// Traits

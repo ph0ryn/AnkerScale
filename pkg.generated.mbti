@@ -1,11 +1,93 @@
 // Generated using `moon info`, DON'T EDIT IT
 package "ph0ryn/ankerscale"
 
+import {
+  "moonbitlang/core/debug",
+}
+
 // Values
+pub fn parse_t9120(Bytes) -> Packet
+
+pub fn time_command(Int, Int, Int, Int, Int, Int) -> Bytes
+
+pub fn unit_command() -> Bytes
+
+pub fn weight_text(Int) -> String
 
 // Errors
 
 // Types and methods
+pub(all) enum Action {
+  Scan
+  StopScan
+  Connect(String, Int)
+  Discover
+  Subscribe
+  SetUnit
+  SetTime
+  RequestHistory
+  Disconnect
+} derive(Eq, @debug.Debug)
+
+pub(all) enum CollectionEvent {
+  PoweredOn
+  PoweredOff
+  Found(String)
+  Connected
+  Profile(Bool)
+  Subscribed
+  Received
+  Disconnected
+  Failed
+  Fatal(String)
+  Tick
+  Stop
+} derive(Eq, @debug.Debug)
+
+pub struct Controller {
+  target : String
+  mut phase : Phase
+  mut attempt : Int
+  mut failure : String?
+  mut deadline : Double
+  mut subscribed_at : Double
+  mut write_step : Int
+  mut retry_ms : Double
+  mut powered : Bool
+}
+pub fn Controller::handle(Self, CollectionEvent, Int, Double) -> Array[Action]
+pub fn Controller::new(String) -> Self
+pub fn Controller::wait_ms(Self, Double) -> Int
+
+pub(all) enum Packet {
+  Stable(Reading)
+  Dynamic(Reading)
+  Overload
+  HistoryCandidate
+  Control(Int)
+  Unknown
+  Invalid(String)
+} derive(Eq, @debug.Debug)
+
+pub(all) enum Phase {
+  WaitingPower
+  Scanning
+  Connecting
+  Discovering
+  Subscribing
+  Measuring
+  Disconnecting
+  Backoff
+  Stopping
+  Stopped
+} derive(Eq, @debug.Debug)
+
+pub(all) struct Reading {
+  weight_centi_kg : Int
+  impedance : Int
+  encrypted_impedance : Int
+  fat_mode : Int
+} derive(Eq, @debug.Debug)
 
 // Type aliases
 
