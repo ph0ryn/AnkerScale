@@ -111,3 +111,47 @@ fn service_text(value : Json) -> String raise {
   }
   lines.join("\n")
 }
+
+///|
+fn measurement_table(rows : Array[Json]) -> String raise {
+  let headers = [
+    "Received (UTC)", "Weight (kg)", "Impedance", "Device", "Origin",
+  ]
+  let cells = rows.map(row => {
+    let weight : Int = @json.from_json(field(row, "weight_centi_kg"))
+    let impedance : Int = @json.from_json(field(row, "impedance"))
+    [
+      string_field(row, "received_at"),
+      @protocol.weight_text(weight),
+      impedance.to_string(),
+      string_field(row, "device_id"),
+      string_field(row, "origin"),
+    ]
+  })
+  let widths = headers.map(header => header.length())
+  for row in cells {
+    for column, value in row {
+      widths[column] = Int::max(widths[column], value.length())
+    }
+  }
+  fn render(row : Array[String]) -> String {
+    row
+    .mapi((column, value) => {
+      let padding = " ".repeat(widths[column] - value.length())
+      if column == 1 || column == 2 {
+        padding + value
+      } else {
+        value + padding
+      }
+    })
+    .join("  ")
+  }
+  let lines = [
+    render(headers),
+    widths.map(width => "-".repeat(width)).join("  "),
+  ]
+  for row in cells {
+    lines.push(render(row))
+  }
+  lines.join("\n")
+}

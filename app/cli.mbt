@@ -216,12 +216,7 @@ fn history(db : @native.Database, options : Options) -> Unit raise {
     } else if rows.is_empty() {
       println("No measurements.")
     } else {
-      for row in rows {
-        let weight : Int = @json.from_json(field(row, "weight_centi_kg"))
-        println(
-          "\{string_field(row, "received_at")}  \{@protocol.weight_text(weight)} kg  \{string_field(row, "device_id")}  [\{string_field(row, "origin")}]",
-        )
-      }
+      println(measurement_table(rows))
     }
   }
 }
