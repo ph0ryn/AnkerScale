@@ -113,7 +113,7 @@ test "registration checks two scales immediately and isolates a rejected profile
   ignore(scan.handle(registration_callback("connected", "a", 1), 200))
   ignore(scan.handle(registration_callback("connected", "b", 2), 210))
   assert_eq(scan.handle(registration_profile("b", 1), 220), [])
-  assert_eq(scan.handle(registration_profile("a", 1, write=8), 300), [
+  assert_eq(scan.handle(registration_profile("a", 1, write=2), 300), [
     { "op": "ble_disconnect", "device": "a", "attempt": 1 },
   ])
   assert_eq(scan.handle(registration_profile("b", 2), 310), [
@@ -126,8 +126,8 @@ test "registration checks two scales immediately and isolates a rejected profile
   assert_eq(scan.choices().map(c => c.id), ["b"])
   match scan.seen.get("a").unwrap().phase {
     Rejected(message) => {
-      assert_true(message.contains("FFF1 write without response"))
-      assert_true(message.contains("\"properties\":8"))
+      assert_true(message.contains("writable FFF1"))
+      assert_true(message.contains("\"properties\":2"))
     }
     _ => fail("bad profile was accepted")
   }

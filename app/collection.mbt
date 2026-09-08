@@ -31,7 +31,7 @@ fn verified_profile(event : Json) -> Bool raise {
       if uuid == "FFF4" && (properties & 48) != 0 {
         notify = true
       }
-      if uuid == "FFF1" && (properties & 4) != 0 {
+      if uuid == "FFF1" && (properties & 12) != 0 {
         write = true
       }
     }

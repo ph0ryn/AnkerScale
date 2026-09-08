@@ -11,6 +11,7 @@
 @property NSInteger attempt;
 @property NSMutableDictionary<NSString *, CBCharacteristic *> *characteristics;
 @property NSMutableArray<NSDictionary *> *writes;
+@property BOOL writingWithResponse;
 @property NSUInteger pendingServices;
 @property BOOL disconnecting;
 - (BOOL)current;
@@ -43,6 +44,13 @@ static NSString *hexString(NSData *data) {
   for (NSUInteger i = 0; i < data.length; i++)
     [hex appendFormat:@"%02x", bytes[i]];
   return hex;
+}
+
+static CBCharacteristicWriteType writeType(CBCharacteristic *characteristic) {
+  return characteristic.properties &
+                 CBCharacteristicPropertyWriteWithoutResponse
+             ? CBCharacteristicWriteWithoutResponse
+             : CBCharacteristicWriteWithResponse;
 }
 
 @implementation ASBluetooth
@@ -367,16 +375,46 @@ static NSString *hexString(NSData *data) {
     [self flushWrites];
 }
 
+- (void)peripheral:(CBPeripheral *)peripheral
+    didWriteValueForCharacteristic:(CBCharacteristic *)characteristic
+                             error:(NSError *)error {
+  (void)characteristic;
+  if (![self current] || peripheral != self.peripheral || self.disconnecting ||
+      !self.writingWithResponse)
+    return;
+  self.writingWithResponse = NO;
+  [self.writes removeObjectAtIndex:0];
+  if (error) {
+    [self.writes removeAllObjects];
+    [self
+        emit:@{@"event" : @"failed", @"message" : error.localizedDescription}];
+    if (!self.disconnecting) {
+      self.disconnecting = YES;
+      [self.owner.central cancelPeripheralConnection:peripheral];
+    }
+    return;
+  }
+  [self flushWrites];
+}
+
 - (void)flushWrites {
   while ([self current] && !self.disconnecting && self.writes.count &&
-         self.peripheral.canSendWriteWithoutResponse) {
+         !self.writingWithResponse) {
     NSDictionary *write = self.writes[0];
-    [self.writes removeObjectAtIndex:0];
     CBCharacteristic *characteristic = write[@"characteristic"];
     NSData *data = write[@"data"];
+    CBCharacteristicWriteType type = writeType(characteristic);
+    if (type == CBCharacteristicWriteWithoutResponse) {
+      if (!self.peripheral.canSendWriteWithoutResponse)
+        return;
+      [self.writes removeObjectAtIndex:0];
+    } else {
+      // Keep the in-flight write at the head until its completion callback.
+      self.writingWithResponse = YES;
+    }
     [self.peripheral writeValue:data
               forCharacteristic:characteristic
-                           type:CBCharacteristicWriteWithoutResponse];
+                           type:type];
     [self packet:data characteristic:characteristic direction:@"tx"];
   }
 }
@@ -544,10 +582,11 @@ id as_ble_request(NSDictionary *input, NSError **error) {
         [data appendBytes:&byte length:1];
       }
       if (!(characteristic.properties &
-            CBCharacteristicPropertyWriteWithoutResponse) ||
-          data.length > [connection.peripheral
-                            maximumWriteValueLengthForType:
-                                CBCharacteristicWriteWithoutResponse] ||
+            (CBCharacteristicPropertyWriteWithoutResponse |
+             CBCharacteristicPropertyWrite)) ||
+          data.length >
+              [connection.peripheral
+                  maximumWriteValueLengthForType:writeType(characteristic)] ||
           connection.writes.count >= 16) {
         commandError = as_failure(
             @"write is unsupported, too large, or transport queue is full");

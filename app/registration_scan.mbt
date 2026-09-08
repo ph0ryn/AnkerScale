@@ -209,7 +209,7 @@ fn RegistrationScan::handle(
                 "services": field(event, "services"),
               }
               Err(
-                "expected eufy T9120 with FFF0, FFF4 notify/indicate, and FFF1 write without response; received \{observed.stringify()}",
+                "expected eufy T9120 with FFF0, FFF4 notify/indicate, and writable FFF1; received \{observed.stringify()}",
               )
             }
             commands.append(candidate.cancel(result, now))

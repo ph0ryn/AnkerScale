@@ -96,8 +96,14 @@ AnkerScaleの既定値は、取得成功率・接続時間・消費電力を比�
 | 通知characteristic     | `0000fff4-0000-1000-8000-00805f9b34fb` |
 | 書き込みcharacteristic | `0000fff1-0000-1000-8000-00805f9b34fb` |
 
-通知の受信経路を準備し、接続後はwriteより先にnotifyを購読します。確認済み範囲では応答なしwriteで
-動きます。
+通知の受信経路を準備し、接続後はwriteより先にnotifyを購読します。
+過去の通信実測では応答なしwriteで測定値を取得していますが、
+2026-09-08のAnkerScaleによる接続では、`FFF1` がWrite（properties=8）、
+`FFF4` がNotify（properties=16）と報告されました。
+書き込み方式は実際のプロパティに従い、WriteWithoutResponse（4）に対応していれば応答なし、
+Write（8）だけに対応する場合は応答ありを使います。
+応答ありの場合の完了・エラーは
+[CoreBluetoothの完了コールバック](https://developer.apple.com/documentation/corebluetooth/cbperipheraldelegate/1518823-peripheral)で受け取ります。
 
 `T9120`のlive weight取得では、認証ハンドシェイクは観測していません。
 
