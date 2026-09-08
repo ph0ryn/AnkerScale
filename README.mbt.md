@@ -60,10 +60,15 @@ rawと測定値は同じトランザクションで保存し、重複・未知�
 
 ```sh
 ./result/bin/ankerscale latest
+./result/bin/ankerscale history --since 2026-09-01
 ./result/bin/ankerscale history --since 2026-09-01 --json
 ./result/bin/ankerscale export --format csv > measurements.csv
 ./result/bin/ankerscale logs
 ```
+
+`latest` と `history` の通常出力は表形式です。
+受信日時（UTC）・体重（kg）・impedance・機器ID・取得元を表示します。
+`encrypted_impedance` は表には表示せず、`--json` とCSV／JSONエクスポートに含めます。
 
 参照コマンドは読み取り専用です。収集が停止していても既存の記録を読めます。
 日時・JSON・終了コードの契約は[設計](docs/design.md)に記載しています。
