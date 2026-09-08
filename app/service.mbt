@@ -103,7 +103,7 @@ fn service_status(options : Options) -> Unit raise {
           if options.json {
             values.to_json().stringify()
           } else {
-            service_text(values.to_json(), options.positional[0])
+            service_text(values.to_json())
           },
         )
         raise DataError("cannot inspect storage: \{error}")
@@ -114,9 +114,18 @@ fn service_status(options : Options) -> Unit raise {
     if options.json {
       values.to_json().stringify()
     } else {
-      service_text(values.to_json(), options.positional[0])
+      service_text(values.to_json())
     },
   )
+}
+
+///|
+fn service_action_result(options : Options) -> Unit raise {
+  if options.json {
+    service_status(options)
+  } else {
+    println(service_action_text(options.positional[0], os("service_probe")))
+  }
 }
 
 ///|
@@ -149,7 +158,7 @@ fn service(options : Options) -> Unit raise {
           ignore(os("service_register"))
         }
       })
-      service_status(options)
+      service_action_result(options)
     }
     "stop" => {
       let probe = os("service_probe")
@@ -171,7 +180,7 @@ fn service(options : Options) -> Unit raise {
         }
         ignore(os("service_unregister"))
       }
-      service_status(options)
+      service_action_result(options)
     }
     "run" => {
       ignore(os("service_log"))

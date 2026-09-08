@@ -21,7 +21,7 @@ test "state diagnostic explains discovery and preserves errors" {
 }
 
 ///|
-test "service startup is not reported as successful or stopped" {
+test "service status describes collector and approval state" {
   let status : Json = {
     "registration": "enabled",
     "writer_active": false,
@@ -40,23 +40,13 @@ test "service startup is not reported as successful or stopped" {
     "database_exists": false,
     "log": "/data/collector.log",
   }
-  let output = service_text(status, "start")
-  assert_true(
-    output.contains("start requested; running process not yet confirmed"),
-  )
-  assert_true(output.contains("Waiting for collector startup"))
-  assert_true(!output.contains("Not running"))
-  assert_true(service_text(status, "status").contains("Collector: not running"))
+  assert_true(service_text(status).contains("Collector: not running"))
   let fields : Map[String, Json] = @json.from_json(status)
   fields["registration"] = "requires_approval".to_json()
-  assert_true(
-    service_text(fields.to_json(), "start").contains("approval required"),
-  )
+  assert_true(service_text(fields.to_json()).contains("approval required"))
   fields["writer_active"] = true.to_json()
   fields["writer_pid"] = (123).to_json()
-  assert_true(
-    service_text(fields.to_json(), "status").contains("running (PID 123)"),
-  )
+  assert_true(service_text(fields.to_json()).contains("running (PID 123)"))
 }
 
 ///|
@@ -71,4 +61,54 @@ test "device errors show the message without transport bookkeeping" {
     }),
     "scale-a: disconnected — Connection lost",
   )
+}
+
+///|
+test "service actions return only the operation result" {
+  assert_eq(
+    service_action_text("stop", {
+      "registration": "not_registered",
+      "writer_active": false,
+    }),
+    "Service stopped.",
+  )
+  assert_eq(
+    service_action_text("start", {
+      "registration": "enabled",
+      "writer_active": true,
+    }),
+    "Start requested. Check ankerscale service status.",
+  )
+  assert_eq(
+    service_action_text("start", {
+      "registration": "enabled",
+      "writer_active": false,
+    }),
+    "Start requested. Check ankerscale service status.",
+  )
+  assert_eq(
+    service_action_text("start", {
+      "registration": "requires_approval",
+      "writer_active": false,
+    }),
+    "Approval required. Allow AnkerScale in System Settings > General > Login Items.",
+  )
+  assert_eq(
+    service_action_text("stop", {
+      "registration": "not_registered",
+      "writer_active": true,
+    }),
+    "Login service disabled. A collector is still running. Check ankerscale service status.",
+  )
+}
+
+///|
+test "missing service definition is not reported as stopped" {
+  let message = service_action_text("stop", {
+    "registration": "not_found",
+    "writer_active": false,
+  }) catch {
+    error => error.to_string()
+  }
+  assert_true(message.contains("service definition not found"))
 }

@@ -231,7 +231,9 @@ Service Managementの `SMAppService` でユーザーのLaunchAgentを登録し�
 LaunchAgentはログイン中だけ動き、異常終了時には間隔を置いて再起動します。
 rootのLaunchDaemonは使用しません。
 `service` と `logs` は既定で人向けのテキストを表示し、`--json` で従来の構造化出力を返します。
-`service start` は起動完了を待たず、プロセス未確認と停止状態を表示上区別します。
+`service start` と `service stop` の通常出力は操作結果だけです。履歴DBの参照は行いません。
+`service start` は起動完了を待たず、プロセスを未確認なら起動要求済みと表示します。
+`service status` と明示的な `--json` では詳細な状態・履歴を参照します。
 収集中の通常診断は日時付きのテキスト、DBの診断は構造化データとして保存します。
 保存失敗時の未保存イベントは、復旧に必要なJSONを診断ログへ残します。
 

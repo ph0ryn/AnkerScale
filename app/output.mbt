@@ -50,7 +50,7 @@ fn diagnostic_text(kind : String, detail : Json) -> String raise {
 }
 
 ///|
-fn service_text(value : Json, command : String) -> String raise {
+fn service_text(value : Json) -> String raise {
   let registration = string_field(value, "registration")
   let active : Bool = @json.from_json(field(value, "writer_active"))
   let lines : Array[String] = []
@@ -67,19 +67,13 @@ fn service_text(value : Json, command : String) -> String raise {
   lines.push(
     if active {
       "Collector: running (PID \{detail_text(field(value, "writer_pid"))})"
-    } else if command == "start" && registration == "enabled" {
-      "Collector: start requested; running process not yet confirmed. Check ankerscale service status."
     } else {
       "Collector: not running"
     },
   )
   let devices : Array[Json] = @json.from_json(field(value, "devices"))
   for device in devices {
-    let phase = if command == "start" && registration == "enabled" && !active {
-      "Waiting for collector startup"
-    } else {
-      phase_text(string_field(device, "phase"))
-    }
+    let phase = phase_text(string_field(device, "phase"))
     lines.push(
       "\{string_field(device, "name")} (\{string_field(device, "id")}): \{phase}",
     )
@@ -116,4 +110,36 @@ fn service_text(value : Json, command : String) -> String raise {
     lines.push("Storage error: \{detail_text(error)}")
   }
   lines.join("\n")
+}
+
+///|
+fn service_action_text(command : String, probe : Json) -> String raise {
+  let registration = string_field(probe, "registration")
+  let active : Bool = @json.from_json(field(probe, "writer_active"))
+  if command == "stop" {
+    if registration == "not_found" {
+      raise DataError(
+        "service definition not found; check ankerscale service status",
+      )
+    }
+    if registration != "not_registered" {
+      raise DataError(
+        "service is still registered; check ankerscale service status",
+      )
+    }
+    return if active {
+      "Login service disabled. A collector is still running. Check ankerscale service status."
+    } else {
+      "Service stopped."
+    }
+  }
+  match registration {
+    "requires_approval" =>
+      "Approval required. Allow AnkerScale in System Settings > General > Login Items."
+    "enabled" => "Start requested. Check ankerscale service status."
+    _ =>
+      raise DataError(
+        "service did not become enabled; check ankerscale service status",
+      )
+  }
 }
