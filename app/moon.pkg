@@ -1,0 +1,8 @@
+import {
+  "ph0ryn/ankerscale" @protocol,
+  "ph0ryn/ankerscale/native",
+  "moonbitlang/core/json",
+  "moonbitlang/core/string",
+  "moonbitlang/core/debug",
+  "moonbitlang/core/argparse",
+}

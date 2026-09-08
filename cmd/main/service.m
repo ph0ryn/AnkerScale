@@ -1,0 +1,295 @@
+#include "platform.h"
+#import <ServiceManagement/ServiceManagement.h>
+#include <errno.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static NSString *const label = @"com.ph0ryn.AnkerScale.collector";
+static NSString *const plist = @"com.ph0ryn.AnkerScale.collector.plist";
+
+static BOOL bundled(NSError *_Nullable *_Nonnull error) {
+  NSString *path = [NSBundle.mainBundle.bundlePath
+      stringByAppendingPathComponent:[@"Contents/Library/LaunchAgents"
+                                         stringByAppendingPathComponent:plist]];
+  if (![NSBundle.mainBundle.bundleIdentifier
+          isEqual:@"com.ph0ryn.AnkerScale"] ||
+      ![NSFileManager.defaultManager fileExistsAtPath:path]) {
+    *error = as_failure(@"service management requires the signed "
+                        @"AnkerScale.app bundle; use result/bin/ankerscale");
+    return NO;
+  }
+  return YES;
+}
+
+static pid_t writerPID(NSError *_Nullable *_Nonnull error) {
+  NSString *path = [as_data_directory()
+      stringByAppendingPathComponent:@"records.sqlite3.lock"];
+  int fd =
+      open(path.fileSystemRepresentation, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0) {
+    if (errno != ENOENT)
+      *error = as_failure([NSString
+          stringWithFormat:@"cannot read writer lock: %s", strerror(errno)]);
+    return 0;
+  }
+  // Query without briefly taking the lock and racing a new collector.
+  struct flock lock = {
+      .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0};
+  if (fcntl(fd, F_GETLK, &lock) != 0)
+    *error = as_failure([NSString
+        stringWithFormat:@"cannot inspect writer lock: %s", strerror(errno)]);
+  close(fd);
+  return lock.l_type != F_UNLCK ? lock.l_pid : 0;
+}
+
+static int launchctl(NSArray<NSString *> *arguments,
+                     NSString *_Nullable *_Nullable outputText,
+                     NSError *_Nullable *_Nonnull error) {
+  NSTask *task = [NSTask new];
+  task.executableURL = [NSURL fileURLWithPath:@"/bin/launchctl"];
+  task.arguments = arguments;
+  NSPipe *output = NSPipe.pipe;
+  task.standardError = output;
+  task.standardOutput = output;
+  if (![task launchAndReturnError:error])
+    return -1;
+  NSData *message = [output.fileHandleForReading readDataToEndOfFile];
+  [task waitUntilExit];
+  NSString *description = [[NSString alloc] initWithData:message
+                                                encoding:NSUTF8StringEncoding];
+  if (outputText)
+    *outputText = description;
+  if (task.terminationStatus != 0 && task.terminationStatus != ESRCH &&
+      task.terminationStatus != 113) {
+    *error = as_failure(description.length ? description : @"launchctl failed");
+  }
+  return task.terminationStatus;
+}
+
+static NSDictionary *readPlist(NSString *path, NSError **error) {
+  NSData *data = [NSData dataWithContentsOfFile:path options:0 error:error];
+  if (!data)
+    return nil;
+  id value =
+      [NSPropertyListSerialization propertyListWithData:data
+                                                options:NSPropertyListImmutable
+                                                 format:NULL
+                                                  error:error];
+  if (value && ![value isKindOfClass:NSDictionary.class]) {
+    *error = as_failure(@"launch agent plist must be a dictionary");
+    return nil;
+  }
+  return value;
+}
+
+static BOOL unregisterBundledService(SMAppService *service, NSError **error) {
+  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  __block NSError *unregisterError = nil;
+  [service unregisterWithCompletionHandler:^(NSError *result) {
+    unregisterError = result;
+    dispatch_semaphore_signal(done);
+  }];
+  if (dispatch_semaphore_wait(
+          done, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)) != 0) {
+    *error = as_failure(@"service unregistration timed out; inspect service "
+                        @"status before retrying");
+  } else {
+    *error = unregisterError;
+  }
+  return !*error;
+}
+
+id as_service_request(NSDictionary *input, NSError **error) {
+  NSString *op = input[@"op"];
+  NSString *directory = as_data_directory();
+  NSString *config = [directory stringByAppendingPathComponent:@"devices.json"];
+  NSFileManager *fm = NSFileManager.defaultManager;
+  if ([op isEqual:@"service_log"]) {
+    umask(0077);
+    if (![fm createDirectoryAtPath:directory
+            withIntermediateDirectories:YES
+                             attributes:@{
+                               NSFilePosixPermissions : @0700
+                             }
+                                  error:error])
+      return nil;
+    NSString *path =
+        [directory stringByAppendingPathComponent:@"collector.log"];
+    int fd = open(path.fileSystemRepresentation,
+                  O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) {
+      *error = as_failure([NSString
+          stringWithFormat:@"cannot open collector log: %s", strerror(errno)]);
+      return nil;
+    }
+    if (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0) {
+      *error = as_failure(@"cannot redirect collector output");
+      close(fd);
+      return nil;
+    }
+    close(fd);
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    fprintf(stderr, "%s collector starting (pid %d)\n", as_utc_now().UTF8String,
+            getpid());
+    return NSNull.null;
+  }
+  if ([op isEqual:@"service_wait"]) {
+    usleep(100000);
+    return NSNull.null;
+  }
+  if (!bundled(error))
+    return nil;
+  SMAppService *service = [SMAppService agentServiceWithPlistName:plist];
+  NSString *installedPath = [[NSHomeDirectory()
+      stringByAppendingPathComponent:@"Library/LaunchAgents"]
+      stringByAppendingPathComponent:plist];
+  BOOL installed = [fm fileExistsAtPath:installedPath];
+  NSString *domain = [NSString stringWithFormat:@"gui/%u", getuid()];
+  NSString *target = [domain stringByAppendingFormat:@"/%@", label];
+  if ([op isEqual:@"service_probe"]) {
+    NSArray *states =
+        @[ @"not_registered", @"enabled", @"requires_approval", @"not_found" ];
+    SMAppServiceStatus status =
+        installed
+            ? ([SMAppService
+                   statusForLegacyURL:[NSURL fileURLWithPath:installedPath]] ==
+                       SMAppServiceStatusRequiresApproval
+                   ? SMAppServiceStatusRequiresApproval
+                   : SMAppServiceStatusEnabled)
+            : service.status;
+    if (!installed && status == SMAppServiceStatusNotFound)
+      status = SMAppServiceStatusNotRegistered;
+    pid_t writer = writerPID(error);
+    if (*error)
+      return nil;
+    return @{
+      @"registration" : states[status],
+      @"writer_active" : writer ? @YES : @NO,
+      @"writer_pid" : writer ? @(writer) : NSNull.null,
+      @"database" :
+          [directory stringByAppendingPathComponent:@"records.sqlite3"],
+      @"database_exists" :
+          @([fm fileExistsAtPath:[directory stringByAppendingPathComponent:
+                                                @"records.sqlite3"]]),
+      @"config_exists" :
+              ([fm fileExistsAtPath:config] ||
+               [fm fileExistsAtPath:[directory stringByAppendingPathComponent:
+                                                   @"service.json"]])
+          ? @YES
+          : @NO,
+      @"log" : [directory stringByAppendingPathComponent:@"collector.log"],
+      @"bundle" : NSBundle.mainBundle.bundlePath,
+      @"service_plist" : installed ? installedPath : (id)NSNull.null
+    };
+  }
+  if ([op isEqual:@"service_register"]) {
+    NSString *templatePath = [NSBundle.mainBundle.bundlePath
+        stringByAppendingPathComponent:
+            [@"Contents/Library/LaunchAgents"
+                stringByAppendingPathComponent:plist]];
+    NSMutableDictionary *desired = [readPlist(templatePath, error) mutableCopy];
+    if (!desired)
+      return nil;
+    [desired removeObjectForKey:@"BundleProgram"];
+    desired[@"Program"] = NSBundle.mainBundle.executablePath;
+    NSDictionary *current = installed ? readPlist(installedPath, error) : nil;
+    if (*error)
+      return nil;
+    if (current && ![current[@"Label"] isEqual:label]) {
+      *error = as_failure(@"refusing to replace a different launch agent");
+      return nil;
+    }
+    BOOL changed = ![desired isEqual:current];
+    if (changed) {
+      pid_t writer = writerPID(error);
+      if (*error)
+        return nil;
+      if (writer) {
+        *error = as_failure(
+            @"stop the collector before changing its service registration");
+        return nil;
+      }
+      // Retire only this app's former SMAppService registration.
+      if (!installed &&
+          (service.status == SMAppServiceStatusEnabled ||
+           service.status == SMAppServiceStatusRequiresApproval)) {
+        if (!unregisterBundledService(service, error))
+          return nil;
+      }
+      launchctl(@[ @"bootout", target ], NULL, error);
+      if (*error)
+        return nil;
+      umask(0077);
+      if (![fm createDirectoryAtPath:installedPath
+                                         .stringByDeletingLastPathComponent
+              withIntermediateDirectories:YES
+                               attributes:@{
+                                 NSFilePosixPermissions : @0700
+                               }
+                                    error:error])
+        return nil;
+      NSData *data = [NSPropertyListSerialization
+          dataWithPropertyList:desired
+                        format:NSPropertyListXMLFormat_v1_0
+                       options:0
+                         error:error];
+      if (!data || ![data writeToFile:installedPath
+                              options:NSDataWritingAtomic
+                                error:error])
+        return nil;
+    }
+    if ([SMAppService
+            statusForLegacyURL:[NSURL fileURLWithPath:installedPath]] ==
+        SMAppServiceStatusRequiresApproval)
+      return NSNull.null;
+    int loaded = launchctl(@[ @"print", target ], NULL, error);
+    if (*error)
+      return nil;
+    if (loaded != 0) {
+      int code =
+          launchctl(@[ @"bootstrap", domain, installedPath ], NULL, error);
+      if (code != 0 && !*error)
+        *error = as_failure(@"could not load the launch agent");
+    }
+    return NSNull.null;
+  }
+  if ([op isEqual:@"service_unregister"]) {
+    if (installed) {
+      launchctl(@[ @"bootout", target ], NULL, error);
+      if (*error)
+        return nil;
+      if (![fm removeItemAtPath:installedPath error:error])
+        return nil;
+    }
+    // The previous bundled registration can outlive the user plist.
+    if (service.status == SMAppServiceStatusEnabled ||
+        service.status == SMAppServiceStatusRequiresApproval) {
+      if (!unregisterBundledService(service, error))
+        return nil;
+    }
+    return NSNull.null;
+  }
+  if ([op isEqual:@"service_signal"]) {
+    int code = launchctl(@[ @"kill", @"SIGTERM", target ], NULL, error);
+    return code == 0 ? @YES : @NO;
+  }
+  if ([op isEqual:@"service_kickstart"]) {
+    NSString *output = nil;
+    int code = launchctl(@[ @"kickstart", @"-p", target ], &output, error);
+    if (code != 0) {
+      if (!*error)
+        *error = as_failure(@"registered launch agent was not found");
+      return nil;
+    }
+    NSScanner *scanner = [NSScanner scannerWithString:output ?: @""];
+    int pid = 0;
+    if (![scanner scanInt:&pid] || !scanner.isAtEnd || pid <= 0) {
+      *error = as_failure(@"launchctl did not return a valid service PID");
+      return nil;
+    }
+    return @(pid);
+  }
+  *error = as_failure(@"unknown service operation");
+  return nil;
+}

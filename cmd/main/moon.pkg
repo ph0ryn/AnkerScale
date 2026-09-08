@@ -1,5 +1,20 @@
-// import {
-//   "ph0ryn/ankerscale" @lib,
-// }
+import {
+  "ph0ryn/ankerscale/app",
+  "ph0ryn/ankerscale/native",
+  "moonbitlang/core/env",
+}
 
 pkgtype(kind: "executable")
+
+options(
+  "native-stub": [ "system.m", "ble.m", "service.m", "registry.m" ],
+  link: {
+    "native": {
+      "cc": "clang",
+      "cc-flags": "-mmacosx-version-min=14.0",
+      "stub-cc": "clang",
+      "stub-cc-flags": "-fobjc-arc -Wall -Wextra -Werror -mmacosx-version-min=14.0",
+      "cc-link-flags": "-framework Foundation -framework CoreBluetooth -framework ServiceManagement -lsqlite3",
+    },
+  },
+)

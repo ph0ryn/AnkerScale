@@ -1,0 +1,32 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "ph0ryn/ankerscale/native"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn call(Json) -> Json raise
+
+pub fn exit(Int) -> Unit
+
+pub fn open(String, writable~ : Bool) -> Database raise
+
+pub fn stderr(String) -> Unit
+
+// Errors
+pub suberror NativeError {
+  NativeError(String)
+} derive(@debug.Debug)
+pub impl Show for NativeError
+
+// Types and methods
+#external
+pub type Database
+pub fn Database::close(Self) -> Unit
+pub fn Database::exec(Self, String, args? : Array[Json]) -> Unit raise
+pub fn Database::query(Self, String, args? : Array[Json]) -> Array[Json] raise
+
+// Type aliases
+
+// Traits
