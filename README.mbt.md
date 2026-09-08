@@ -25,17 +25,29 @@ Developer ID署名・公証による配布物ではありません。
 
 ## 測定を記録する
 
-まず前面で受信を確認します。体重計を起動してから検索してください。
+体重計を起動し、収集する機器を登録します。
 
 ```sh
-./result/bin/ankerscale devices --seconds 20
-./result/bin/ankerscale collect --device <表示された体重計のUUID>
+./result/bin/ankerscale register --seconds 20
+./result/bin/ankerscale devices
+./result/bin/ankerscale collect
 ```
 
-初回はmacOSでBluetoothの許可が必要です。`devices` は周辺機器をJSONLで表示します。
-UUIDを明示して選択し、接続後に名前・GATT構成・プロパティを確認します。
-未確認の機器へT9120の初期化コマンドを送信しません。
-収集は `Ctrl+C` で停止できます。
+初回はmacOSでBluetoothの許可が必要です。`register` は指定時間の検索後、
+対応候補を番号付きで表示します。登録する番号を `1,2` のように入力してください。
+1台だけでも選択が必要です。空入力で取り消せます。
+接続して名前・GATT構成・プロパティを確認し、全選択機器の検証と切断が成功したら登録します。
+この確認では初期化コマンドを送信せず、検証に失敗した場合は登録を変更しません。
+
+`devices` は登録済み一覧を表示し、Bluetoothへのアクセスは不要です。
+`devices --json` では一覧をJSON配列で取得できます。
+`collect` は登録した全機器から同時に収集し、機器の識別子と測定値を表示します。
+まず前面で受信を確認し、`Ctrl+C` で停止してください。
+
+登録情報は `~/Library/Application Support/AnkerScale/devices.json` に保存します。
+収集対象を追加するときは `register`、外すときは `unregister` で選択します。
+稼働中の収集にも約1秒で反映され、対象から外しても測定履歴は残ります。
+全台を解除すると、収集プロセスは新しい登録を待ちます。
 
 既定の保存先は
 `~/Library/Application Support/AnkerScale/records.sqlite3` です。
@@ -56,7 +68,7 @@ rawと測定値は同じトランザクションで保存し、重複・未知�
 前面での受信確認後に、同じバンドルから登録します。
 
 ```sh
-./result/bin/ankerscale service start --device <体重計のUUID>
+./result/bin/ankerscale service start
 ./result/bin/ankerscale service status
 ./result/bin/ankerscale service stop
 ```
@@ -64,9 +76,15 @@ rawと測定値は同じトランザクションで保存し、重複・未知�
 `start` はユーザーのLaunchAgentを登録し、ログイン後の起動も有効にします。
 macOSが承認を要求した場合は、システム設定のログイン項目で許可してください。
 `stop` は保存と切断の完了を待ってから登録を解除します。
+ここで解除するのは常駐の登録です。`devices` の機器一覧と測定履歴は残ります。
+
+旧バージョンの `service.json` がある場合、機器一覧はその単一UUIDを読み取ります。
+次の登録変更または `service start` で、新しい保存形式へ移行したことを表示します。
+`collect` と `service start` の `--device` は廃止しました。
 
 `status` の登録状態、書き手の存在、最後の保存、最後のイベントは別の情報です。
 `enabled` だけでは受信が正常だとは判断できません。
+`status` の `devices` には、機器ごとの記録された接続状態と直近のエラーも表示します。
 起動時や保存失敗時の診断は、同じ保存ディレクトリの `collector.log` に追記します。
 
 バンドルを更新するときは、**古いバンドルから停止・登録解除してから**
