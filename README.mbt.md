@@ -112,3 +112,4 @@ macOSが承認を要求した場合は、システム設定のログイン項目
 - [設計とCLIの契約](docs/design.md)
 - [開発と検証](docs/development.md)
 - [eufy体重計のBLEプロトコル調査資料](docs/protocol.md)
+- [体組成の計算](docs/protocol/bodyComposition.md)（12項目の式、性別・年齢・体格・アスリート設定による分岐）
