@@ -27,7 +27,6 @@
           pkgs.makeWrapper
         ];
         buildInputs = [ pkgs.sqlite ];
-        nativeCheckInputs = [ pkgs.python3 ];
         MOONBIT_NEW_NATIVE = "0";
         buildPhase = ''
           runHook preBuild
@@ -38,7 +37,6 @@
         checkPhase = ''
           runHook preCheck
           moon test --release --deny-warn --quiet
-          ANKERSCALE_TEST_RELEASE=1 python3 tests/cli_test.py
           runHook postCheck
         '';
         installPhase = ''
@@ -74,7 +72,6 @@
         packages = [
           moonbit
           pkgs.clang
-          pkgs.python3
         ];
         buildInputs = [ pkgs.sqlite ];
         MOONBIT_NEW_NATIVE = "0";

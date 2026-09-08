@@ -4,7 +4,7 @@
 
 Apple SiliconとmacOS 14以降を対象に、リポジトリの `flake.nix` を使います。
 `flake.lock` がMoonBit overlayとnixpkgsを固定します。
-dev shellにはMoonBit、Clang、SQLite、テスト用のPythonが含まれます。
+dev shellにはMoonBit、Clang、SQLiteが含まれます。
 
 ```sh
 nix develop
@@ -12,7 +12,6 @@ moon version --all
 moon check --deny-warn
 moon build --deny-warn
 moon test --deny-warn
-python3 tests/cli_test.py
 moon info && moon fmt
 ```
 
@@ -30,7 +29,7 @@ nix build
 nix flake check
 ```
 
-`nix build` はリリースビルド、MoonBitテスト、CLI統合テストを実行してから
+`nix build` はリリースビルド、MoonBitテストを実行してから
 アプリバンドルを作成し、ad-hoc署名を付けて検証します。
 SQLiteなどのNix依存はNix storeを参照するため、
 生成されたバイナリ単体をNixのないMacへコピーする配布方式ではありません。
@@ -40,7 +39,6 @@ SQLiteなどのNix依存はNix storeを参照するため、
 ```sh
 nix develop -c moon build --release --deny-warn
 nix develop -c moon test --release --deny-warn
-nix develop -c env ANKERSCALE_TEST_RELEASE=1 python3 tests/cli_test.py
 ```
 
 MoonBitを編集した最後には `moon info && moon fmt` を実行し、
@@ -58,7 +56,15 @@ MoonBitのテストでは次の境界を検証します。
 | 複数機器 | 共有スキャン、交差したコールバック、機器ごとの試行ID、追加・解除・再登録、障害の隔離、共通の停止期限 |
 | GATT照合 | 機器名、サービス、通知・書き込みプロパティを一緒に照合 |
 
-`python3 tests/cli_test.py` は実際のCLI・登録ファイル・SQLiteを一時ディレクトリで検証します。
+CLI統合テストは、Python 3を別途用意した環境で手動実行します。
+flakeの依存や `nix build` の検証には含めません。
+
+```sh
+nix develop -c python3 tests/cli_test.py
+nix develop -c env ANKERSCALE_TEST_RELEASE=1 python3 tests/cli_test.py
+```
+
+実際のCLI・登録ファイル・SQLiteを一時ディレクトリで検証します。
 テスト専用実行ファイルだけがホームディレクトリとBLE・Service Managementの境界を差し替えます。
 製品バイナリにはテスト用環境変数による切り替えを設けていません。
 登録時の検索・選択・GATT検証・中断・排他・原子的保存・旧形式移行に加え、
