@@ -54,6 +54,8 @@ static NSDictionary *request(moonbit_bytes_t raw, NSError **error) {
 
 void *as_db_open(moonbit_bytes_t raw, int writable) {
   @autoreleasepool {
+    if (writable)
+      umask(0077);
     sqlite3 *db = NULL;
     NSString *path = text(raw);
     int flags = writable ? SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE

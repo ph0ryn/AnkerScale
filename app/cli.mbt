@@ -5,6 +5,11 @@ let help : String =
   #|  ankerscale register [--seconds 10]
   #|  ankerscale devices [--json]
   #|  ankerscale unregister
+  #|  ankerscale profile init [--db PATH]
+  #|  ankerscale profile [--at DATE] [--json] [--db PATH]
+  #|  ankerscale profile history [--json] [--db PATH]
+  #|  ankerscale profile set [--birth-date DATE] [--sex male|female] [--height-cm CM] [--mode normal|athlete] [--from DATE] [--db PATH]
+  #|  ankerscale profile correct [ID] [--birth-date DATE] [--sex male|female] [--height-cm CM] [--mode normal|athlete] [--db PATH]
   #|  ankerscale collect [--db PATH]
   #|  ankerscale latest [--db PATH] [--json]
   #|  ankerscale history [--since DATE] [--until DATE] [--device UUID] [--limit 100] [--json] [--db PATH]
@@ -270,6 +275,10 @@ fn replay(db : @native.Database, path : String) -> Unit raise {
 pub fn run(args : Array[String]) -> Unit raise {
   if args.is_empty() || args == ["--help"] || args == ["help"] {
     println(help)
+    return
+  }
+  if args[0] == "profile" {
+    profile_cli(args[1:].to_owned())
     return
   }
   let options = parse_options(args)

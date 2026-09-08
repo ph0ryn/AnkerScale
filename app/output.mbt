@@ -128,6 +128,15 @@ fn measurement_table(rows : Array[Json]) -> String raise {
       string_field(row, "origin"),
     ]
   })
+  text_table(headers, cells, right_aligned=[1, 2])
+}
+
+///|
+fn text_table(
+  headers : Array[String],
+  cells : Array[Array[String]],
+  right_aligned~ : Array[Int],
+) -> String {
   let widths = headers.map(header => header.length())
   for row in cells {
     for column, value in row {
@@ -138,7 +147,7 @@ fn measurement_table(rows : Array[Json]) -> String raise {
     row
     .mapi((column, value) => {
       let padding = " ".repeat(widths[column] - value.length())
-      if column == 1 || column == 2 {
+      if right_aligned.contains(column) {
         padding + value
       } else {
         value + padding

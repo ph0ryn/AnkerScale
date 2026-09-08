@@ -110,6 +110,11 @@ struct Incoming {
 
 ///|
 fn schema(db : @native.Database, writable~ : Bool) -> Unit raise {
+  let mut transaction_open = writable
+  if writable {
+    db.exec("BEGIN IMMEDIATE")
+  }
+  errdefer (if transaction_open { db.exec("ROLLBACK") })
   let version = int_field(db.query("PRAGMA user_version")[0], "user_version")
   let application = int_field(
     db.query("PRAGMA application_id")[0],
@@ -121,8 +126,6 @@ fn schema(db : @native.Database, writable~ : Bool) -> Unit raise {
       .is_empty() {
       raise DataError("refusing to initialize an unrelated database")
     }
-    db.exec("BEGIN IMMEDIATE")
-    errdefer db.exec("ROLLBACK")
     db.exec(
       "CREATE TABLE devices (id TEXT PRIMARY KEY, name TEXT NOT NULL, services TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL)",
     )
@@ -140,10 +143,21 @@ fn schema(db : @native.Database, writable~ : Bool) -> Unit raise {
       "CREATE TABLE events (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, received_at TEXT NOT NULL, kind TEXT NOT NULL, detail TEXT NOT NULL)",
     )
     db.exec("PRAGMA application_id=1095975756")
-    db.exec("PRAGMA user_version=1")
-    db.exec("COMMIT")
-  } else if version != 1 || application != 1095975756 {
+  } else if (version != 1 && version != 2) || application != 1095975756 {
     raise DataError("unsupported database schema or application ID")
+  }
+  if writable {
+    if version < 2 {
+      db.exec(
+        "CREATE TABLE person (id INTEGER PRIMARY KEY CHECK(id=1), birth_date TEXT NOT NULL)",
+      )
+      db.exec(
+        "CREATE TABLE profile_history (id INTEGER PRIMARY KEY, effective_from TEXT NOT NULL UNIQUE, sex TEXT NOT NULL CHECK(sex IN ('male','female')), height_cm INTEGER NOT NULL CHECK(height_cm>0), mode TEXT NOT NULL CHECK(mode IN ('normal','athlete')))",
+      )
+      db.exec("PRAGMA user_version=2")
+    }
+    db.exec("COMMIT")
+    transaction_open = false
   }
   db.exec("PRAGMA foreign_keys=ON")
   if writable {
@@ -266,12 +280,15 @@ fn[T] with_db(
   path : String,
   writable~ : Bool,
   action : (@native.Database) -> T raise,
+  collector_lock? : Bool = true,
 ) -> T raise {
   if writable {
     ignore(@native.call({ "op": "prepare_directory", "path": path }))
-    ignore(@native.call({ "op": "lock", "path": path + ".lock" }))
+    if collector_lock {
+      ignore(@native.call({ "op": "lock", "path": path + ".lock" }))
+    }
   }
-  defer (if writable {
+  defer (if writable && collector_lock {
     ignore(
       os("unlock") catch {
         e => {

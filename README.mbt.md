@@ -73,6 +73,55 @@ rawと測定値は同じトランザクションで保存し、重複・未知�
 参照コマンドは読み取り専用です。収集が停止していても既存の記録を読めます。
 日時・JSON・終了コードの契約は[設計](docs/design.md)に記載しています。
 
+## プロファイル
+
+1人分の生年月日と、性別・身長・通常／アスリート設定を保存できます。
+年齢は保存せず、参照日時点の満年齢を生年月日から求めます。
+初回は対話形式で設定できます。
+
+```sh
+./result/bin/ankerscale profile init
+```
+
+生年月日・性別・身長・モード・適用開始日時を順に入力します。
+適用開始日時はEnterで現在時刻になり、誤った入力はその項目を入力し直せます。
+Ctrl+DまたはCtrl+Cで保存せずに取り消せます。設定済みの場合は `set` / `correct` を使用します。
+引数でまとめて設定する場合は次の形です。値は入力例です。
+
+```sh
+./result/bin/ankerscale profile set \
+  --birth-date 2000-05-20 --sex male --height-cm 170 --mode normal --from 2026-01-01
+./result/bin/ankerscale profile
+./result/bin/ankerscale profile set --mode athlete
+./result/bin/ankerscale profile set --height-cm 171 --from 2026-09-01
+./result/bin/ankerscale profile --at 2026-09-01 --json
+./result/bin/ankerscale profile history
+```
+
+初回は4項目すべてが必要です。性別は `male` / `female`、身長は正の整数のcm、
+モードは `normal` / `athlete` を指定します。
+`set` は設定の履歴を追加し、省略した項目は適用開始時点の設定を引き継ぎます。
+`--from` を省略すると実行時刻から適用します。
+初回設定より前の期間を追加する場合は、性別・身長・モードをすべて指定してください。
+期間の途中への追加は次の設定が始まるまで有効で、後続の設定は変更しません。
+
+入力ミスは `correct` で訂正します。履歴IDは `profile history` で確認できます。
+
+```sh
+./result/bin/ankerscale profile correct 2 --height-cm 170
+./result/bin/ankerscale profile correct --birth-date 2000-05-21
+```
+
+履歴IDを指定した訂正はその期間だけに、生年月日の訂正は全期間の年齢に反映されます。
+生年月日と履歴の項目を同時には訂正できません。
+`profile` と `profile history` は `--json`、全プロファイルコマンドは `--db PATH` に対応します。
+既定では測定と同じSQLite DBに保存し、収集中でも設定を変更できます。
+
+適用日時・参照日時はUTCです。日付だけの指定はUTCの午前0時を表します。
+生年月日は `YYYY-MM-DD` 形式です。2月29日生まれの満年齢は、平年では3月1日に増えます。
+設定がない期間の参照は `--json` では `null` を返します。
+プロファイルは保存・参照のみで、体組成の計算や測定値への付加はまだ行いません。
+
 ## 常駐管理
 
 前面での受信確認後に、同じバンドルから登録します。
