@@ -67,8 +67,25 @@ rawと測定値は同じトランザクションで保存し、重複・未知�
 ```
 
 `latest` と `history` の通常出力は表形式です。
-受信日時（UTC）・体重（kg）・impedance・機器ID・取得元を表示します。
+受信日時・体重（kg）・impedance・機器ID・取得元を表示します。
 `encrypted_impedance` は表には表示せず、`--json` とCSV／JSONエクスポートに含めます。
+
+日時の表示と履歴検索の日付指定に使うUTCオフセットを設定できます。
+
+```sh
+ankerscale config timezone +9  # +09:00に設定
+ankerscale config timezone     # 現在の値を表示
+ankerscale config timezone +0  # UTCに戻す
+```
+
+未設定時は `+00:00` です。`-5` や `+05:30` も指定でき、範囲は `-12:00` から
+`+14:00` です。固定時差なので、夏時間への自動切り替えはありません。
+設定は `~/Library/Application Support/AnkerScale/config.json` に保存します。
+`latest`・`history`・`logs`・`service status`・プロファイルの通常表示に適用し、
+`history` / `export` の日付だけの検索条件は設定した時差の午前0時として扱います。
+例えば `+9` では `--since 2026-09-09` はUTCの `2026-09-08T15:00:00Z` です。
+DB・JSON・CSVの日時と、明示的な `Z` 付き検索条件はUTCを維持します。
+収集プロセスのログとプロファイルへの日時入力は引き続きUTCです。
 
 参照コマンドは読み取り専用です。収集が停止していても既存の記録を読めます。
 日時・JSON・終了コードの契約は[設計](docs/design.md)に記載しています。

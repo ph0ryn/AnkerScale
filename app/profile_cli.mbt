@@ -11,7 +11,8 @@ let profile_help : String =
   #|Initial set requires birth date, sex, height and mode. Height is a positive integer in cm.
   #|Later sets inherit omitted settings at --from (default: now).
   #|Corrections affect only the selected period; birth-date corrections affect all periods.
-  #|Dates use UTC; date-only values mean midnight UTC. Birth dates use YYYY-MM-DD.
+  #|Date inputs use UTC; date-only values mean midnight UTC. Birth dates use YYYY-MM-DD.
+  #|Displayed timestamps use config timezone.
   #|Displayed age is completed years at --at (default: now), not the SDK year difference.
 
 ///|
@@ -99,23 +100,23 @@ fn profile_patch(options : Options) -> ProfilePatch raise {
 }
 
 ///|
-fn profile_text(value : Json) -> String raise {
+fn profile_text(value : Json, timezone? : Int = 0) -> String raise {
   if value is Null {
     return "No profile at this time. Use ankerscale profile set to add one."
   }
   "Birth date: \{string_field(value, "birth_date")}\n" +
-  "Age: \{int_field(value, "age")} (at \{string_field(value, "at")})\n" +
+  "Age: \{int_field(value, "age")} (at \{display_date(string_field(value, "at"), timezone)})\n" +
   "Sex: \{string_field(value, "sex")}\n" +
   "Height: \{int_field(value, "height_cm")} cm\n" +
   "Mode: \{string_field(value, "mode")}\n" +
-  "Profile: \{int_field(value, "id")} (from \{string_field(value, "effective_from")}, until \{profile_until_text(value)})"
+  "Profile: \{int_field(value, "id")} (from \{display_date(string_field(value, "effective_from"), timezone)}, until \{profile_until_text(value, timezone~)})"
 }
 
 ///|
-fn profile_until_text(value : Json) -> String raise {
+fn profile_until_text(value : Json, timezone? : Int = 0) -> String raise {
   match field(value, "until") {
     Null => "open-ended"
-    String(until) => until
+    String(until) => display_date(until, timezone)
     _ => raise DataError("invalid profile end time")
   }
 }
@@ -127,6 +128,7 @@ fn profile_cli(args : Array[String]) -> Unit raise {
     return
   }
   let options = parse_profile_options(args)
+  let timezone = if options.json { 0 } else { read_timezone() }
   let patch = profile_patch(options)
   let birth_date = options.values.get("--birth-date")
   let mut id : Int64? = None
@@ -163,7 +165,7 @@ fn profile_cli(args : Array[String]) -> Unit raise {
     }
     defer (if !writable { db.exec("ROLLBACK") })
     match options.command {
-      "init" => profile_init(db)
+      "init" => profile_init(db, timezone)
       "show" => {
         let at = match options.values.get("--at") {
           Some(at) => at
@@ -174,7 +176,7 @@ fn profile_cli(args : Array[String]) -> Unit raise {
           if options.json {
             value.stringify()
           } else {
-            profile_text(value)
+            profile_text(value, timezone~)
           },
         )
       }
@@ -188,8 +190,8 @@ fn profile_cli(args : Array[String]) -> Unit raise {
           let cells = rows.map(row => {
             [
               int_field(row, "id").to_string(),
-              string_field(row, "effective_from"),
-              profile_until_text(row),
+              display_date(string_field(row, "effective_from"), timezone),
+              profile_until_text(row, timezone~),
               string_field(row, "sex"),
               int_field(row, "height_cm").to_string(),
               string_field(row, "mode"),
@@ -197,7 +199,7 @@ fn profile_cli(args : Array[String]) -> Unit raise {
           })
           println(
             text_table(
-              ["ID", "From (UTC)", "Until (UTC)", "Sex", "Height (cm)", "Mode"],
+              ["ID", "From", "Until", "Sex", "Height (cm)", "Mode"],
               cells,
               right_aligned=[0, 4],
             ),
@@ -210,7 +212,9 @@ fn profile_cli(args : Array[String]) -> Unit raise {
           None => string_field(os("now"), "utc")
         }
         let saved_id = profile_set(db, birth_date, from, patch)
-        println("Saved profile \{saved_id} from \{from}.")
+        println(
+          "Saved profile \{saved_id} from \{display_date(from, timezone)}.",
+        )
       }
       "correct" => {
         profile_correct(db, id, birth_date, patch)
@@ -269,7 +273,7 @@ fn prompt_profile_value(
 }
 
 ///|
-fn profile_init(db : @native.Database) -> Unit raise {
+fn profile_init(db : @native.Database, timezone : Int) -> Unit raise {
   if profile_birth_date(db) is Some(_) {
     raise UsageError(
       "profile already initialized; use profile set or profile correct",
@@ -304,5 +308,5 @@ fn profile_init(db : @native.Database) -> Unit raise {
   let options = parse_profile_options(args)
   let from = required(options, "--from")
   let id = profile_set(db, birth_date, from, profile_patch(options))
-  println("Saved profile \{id} from \{from}.")
+  println("Saved profile \{id} from \{display_date(from, timezone)}.")
 }

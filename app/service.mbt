@@ -1,5 +1,6 @@
 ///|
 fn service_status(options : Options) -> Unit raise {
+  let timezone = if options.json { 0 } else { read_timezone() }
   let registry = read_registry()
   let probe = os("service_probe")
   let active : Bool = @json.from_json(field(probe, "writer_active"))
@@ -103,7 +104,9 @@ fn service_status(options : Options) -> Unit raise {
           if options.json {
             values.to_json().stringify()
           } else {
-            service_text(values.to_json())
+            service_text(values.to_json(), format_date=value => {
+              display_date(value, timezone)
+            })
           },
         )
         raise DataError("cannot inspect storage: \{error}")
@@ -114,7 +117,9 @@ fn service_status(options : Options) -> Unit raise {
     if options.json {
       values.to_json().stringify()
     } else {
-      service_text(values.to_json())
+      service_text(values.to_json(), format_date=value => {
+        display_date(value, timezone)
+      })
     },
   )
 }

@@ -5,6 +5,7 @@ let help : String =
   #|  ankerscale register [--seconds 10]
   #|  ankerscale devices [--json]
   #|  ankerscale unregister
+  #|  ankerscale config timezone [OFFSET]
   #|  ankerscale profile init [--db PATH]
   #|  ankerscale profile [--at DATE] [--json] [--db PATH]
   #|  ankerscale profile history [--json] [--db PATH]
@@ -19,8 +20,8 @@ let help : String =
   #|  ankerscale service stop|status [--json]
   #|  ankerscale replay FILE.jsonl --db PATH
   #|
-  #|Dates use UTC. --since is inclusive; --until is exclusive.
-  #|Date-only values mean midnight UTC. Live measurements have no device timestamp.
+  #|--since is inclusive; --until is exclusive. Date-only filters use the configured timezone.
+  #|Explicit Z timestamps, JSON and CSV use UTC. Live measurements have no device timestamp.
   #|Replay writes explicit test data; use a separate database.
 
 ///|
@@ -84,7 +85,7 @@ fn parse_options(args : Array[String]) -> Options raise {
   let options = { command, positional, values, json, }
   for key in ["--since", "--until"] {
     if values.get(key) is Some(value) {
-      values[key] = date(value)
+      values[key] = filter_date(value)
     }
   }
   if values.get("--since") is Some(since) &&
@@ -221,7 +222,12 @@ fn history(db : @native.Database, options : Options) -> Unit raise {
     } else if rows.is_empty() {
       println("No measurements.")
     } else {
-      println(measurement_table(rows))
+      let timezone = read_timezone()
+      println(
+        measurement_table(rows, timezone~, format_date=value => {
+          display_date(value, timezone)
+        }),
+      )
     }
   }
 }
@@ -281,6 +287,10 @@ pub fn run(args : Array[String]) -> Unit raise {
     profile_cli(args[1:].to_owned())
     return
   }
+  if args[0] == "config" {
+    config_cli(args[1:].to_owned())
+    return
+  }
   let options = parse_options(args)
   ignore(os("signals"))
   let path = match options.values.get("--db") {
@@ -308,6 +318,7 @@ pub fn run(args : Array[String]) -> Unit raise {
       with_db(path, writable=false, db => history(db, options))
     "logs" =>
       with_db(path, writable=false, db => {
+        let timezone = if options.json { 0 } else { read_timezone() }
         for
           row in db.query(
             "SELECT 'collector' AS source,received_at,kind,detail FROM events UNION ALL SELECT 'packet' AS source,received_at,kind,json_object('raw_id',id,'device',device_id,'session',session,'direction',direction,'service',service,'characteristic',characteristic,'hex',hex,'parser_version',parser_version,'error',error,'origin',origin) AS detail FROM raw_packets ORDER BY received_at DESC LIMIT ?",
@@ -319,7 +330,7 @@ pub fn run(args : Array[String]) -> Unit raise {
             if options.json {
               record.to_json().stringify()
             } else {
-              "\{string_field(row, "received_at")}  \{diagnostic_text(string_field(row, "kind"), record["detail"])}"
+              "\{display_date(string_field(row, "received_at"), timezone)}  \{diagnostic_text(string_field(row, "kind"), record["detail"])}"
             },
           )
         }

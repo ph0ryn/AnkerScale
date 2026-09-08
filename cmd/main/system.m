@@ -200,6 +200,44 @@ moonbit_bytes_t as_system_call(moonbit_bytes_t raw) {
       return reply(value, error);
     }
     NSFileManager *fm = NSFileManager.defaultManager;
+    if ([op isEqual:@"config_read"] || [op isEqual:@"config_write"]) {
+      NSString *path =
+          [as_data_directory() stringByAppendingPathComponent:@"config.json"];
+      if ([op isEqual:@"config_read"]) {
+        NSData *data = [NSData dataWithContentsOfFile:path
+                                              options:0
+                                                error:&error];
+        if (!data) {
+          if ([error.domain isEqual:NSCocoaErrorDomain] &&
+              (error.code == NSFileReadNoSuchFileError ||
+               error.code == NSFileNoSuchFileError))
+            return reply(nil, nil);
+          return reply(nil, error);
+        }
+        id value = [NSJSONSerialization JSONObjectWithData:data
+                                                   options:0
+                                                     error:&error];
+        if (value && ![value isKindOfClass:NSDictionary.class])
+          return reply(nil, as_failure(@"config.json must be an object"));
+        return reply(value, error);
+      }
+      umask(0077);
+      if (![fm createDirectoryAtPath:as_data_directory()
+              withIntermediateDirectories:YES
+                               attributes:@{
+                                 NSFilePosixPermissions : @0700
+                               }
+                                    error:&error])
+        return reply(nil, error);
+      NSData *data =
+          [NSJSONSerialization dataWithJSONObject:input[@"value"]
+                                          options:NSJSONWritingPrettyPrinted |
+                                                  NSJSONWritingSortedKeys
+                                            error:&error];
+      if (data)
+        [data writeToFile:path options:NSDataWritingAtomic error:&error];
+      return reply(nil, error);
+    }
     if ([op isEqual:@"paths"])
       return reply(@{
         @"data" : as_data_directory(),
@@ -244,6 +282,9 @@ moonbit_bytes_t as_system_call(moonbit_bytes_t raw) {
       f.calendar = [[NSCalendar alloc]
           initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
       f.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+      if (input[@"input_offset"])
+        f.timeZone = [NSTimeZone
+            timeZoneForSecondsFromGMT:[input[@"input_offset"] intValue] * 60];
       f.lenient = NO;
       f.dateFormat =
           value.length == 10
@@ -256,7 +297,13 @@ moonbit_bytes_t as_system_call(moonbit_bytes_t raw) {
             nil,
             as_failure(
                 @"date must be YYYY-MM-DD or UTC YYYY-MM-DDTHH:mm:ss[.SSS]Z"));
+      f.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
       f.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
+      if (input[@"display_offset"]) {
+        f.timeZone = [NSTimeZone
+            timeZoneForSecondsFromGMT:[input[@"display_offset"] intValue] * 60];
+        f.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss.SSSXXX";
+      }
       return reply([f stringFromDate:date], nil);
     }
     if ([op isEqual:@"prepare_directory"]) {

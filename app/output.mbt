@@ -50,7 +50,10 @@ fn diagnostic_text(kind : String, detail : Json) -> String raise {
 }
 
 ///|
-fn service_text(value : Json) -> String raise {
+fn service_text(
+  value : Json,
+  format_date? : (String) -> String raise = value => value,
+) -> String raise {
   let registration = string_field(value, "registration")
   let active : Bool = @json.from_json(field(value, "writer_active"))
   let lines : Array[String] = []
@@ -79,7 +82,7 @@ fn service_text(value : Json) -> String raise {
     )
     if field(device, "last_error") is error && error != Json::null() {
       lines.push(
-        "  Last recorded error: \{string_field(error, "received_at")} — \{diagnostic_text("error", field(error, "detail"))}",
+        "  Last recorded error: \{format_date(string_field(error, "received_at"))} — \{diagnostic_text("error", field(error, "detail"))}",
       )
     }
   }
@@ -88,13 +91,13 @@ fn service_text(value : Json) -> String raise {
       Null => "Last saved measurement: none"
       saved => {
         let weight : Int = @json.from_json(field(saved, "weight_centi_kg"))
-        "Last saved measurement: \{@protocol.weight_text(weight)} kg at \{string_field(saved, "received_at")} [\{string_field(saved, "origin")}]"
+        "Last saved measurement: \{@protocol.weight_text(weight)} kg at \{format_date(string_field(saved, "received_at"))} [\{string_field(saved, "origin")}]"
       }
     },
   )
   if field(value, "last_event") is event && event != Json::null() {
     lines.push(
-      "Last recorded event: \{string_field(event, "received_at")}  \{diagnostic_text(string_field(event, "kind"), @json.parse(string_field(event, "detail")))}",
+      "Last recorded event: \{format_date(string_field(event, "received_at"))}  \{diagnostic_text(string_field(event, "kind"), @json.parse(string_field(event, "detail")))}",
     )
   }
   lines.push(
@@ -113,15 +116,23 @@ fn service_text(value : Json) -> String raise {
 }
 
 ///|
-fn measurement_table(rows : Array[Json]) -> String raise {
+fn measurement_table(
+  rows : Array[Json],
+  timezone? : Int = 0,
+  format_date? : (String) -> String raise = value => value,
+) -> String raise {
   let headers = [
-    "Received (UTC)", "Weight (kg)", "Impedance", "Device", "Origin",
+    "Received (UTC\{timezone_text(timezone)})",
+    "Weight (kg)",
+    "Impedance",
+    "Device",
+    "Origin",
   ]
   let cells = rows.map(row => {
     let weight : Int = @json.from_json(field(row, "weight_centi_kg"))
     let impedance : Int = @json.from_json(field(row, "impedance"))
     [
-      string_field(row, "received_at"),
+      format_date(string_field(row, "received_at")),
       @protocol.weight_text(weight),
       impedance.to_string(),
       string_field(row, "device_id"),
