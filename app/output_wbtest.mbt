@@ -64,51 +64,71 @@ test "device errors show the message without transport bookkeeping" {
 }
 
 ///|
-test "service actions return only the operation result" {
-  assert_eq(
-    service_action_text("stop", {
-      "registration": "not_registered",
-      "writer_active": false,
-    }),
-    "Service stopped.",
+test "startup waits for the launched service to own the writer lock" {
+  assert_true(
+    !service_completed(
+      "start",
+      { "registration": "enabled", "writer_active": false, "writer_pid": null },
+      (123).to_json(),
+    ),
   )
-  assert_eq(
-    service_action_text("start", {
-      "registration": "enabled",
-      "writer_active": true,
-    }),
-    "Start requested. Check ankerscale service status.",
+  assert_true(
+    !service_completed(
+      "start",
+      { "registration": "enabled", "writer_active": true, "writer_pid": 456 },
+      (123).to_json(),
+    ),
   )
-  assert_eq(
-    service_action_text("start", {
-      "registration": "enabled",
-      "writer_active": false,
-    }),
-    "Start requested. Check ankerscale service status.",
-  )
-  assert_eq(
-    service_action_text("start", {
-      "registration": "requires_approval",
-      "writer_active": false,
-    }),
-    "Approval required. Allow AnkerScale in System Settings > General > Login Items.",
-  )
-  assert_eq(
-    service_action_text("stop", {
-      "registration": "not_registered",
-      "writer_active": true,
-    }),
-    "Login service disabled. A collector is still running. Check ankerscale service status.",
+  assert_true(
+    service_completed(
+      "start",
+      { "registration": "enabled", "writer_active": true, "writer_pid": 123 },
+      (123).to_json(),
+    ),
   )
 }
 
 ///|
-test "missing service definition is not reported as stopped" {
-  let message = service_action_text("stop", {
-    "registration": "not_found",
-    "writer_active": false,
-  }) catch {
+test "stop waits for both writer exit and unregistration" {
+  assert_true(
+    !service_completed(
+      "stop",
+      { "registration": "enabled", "writer_active": false },
+      Json::null(),
+    ),
+  )
+  assert_true(
+    !service_completed(
+      "stop",
+      { "registration": "not_registered", "writer_active": true },
+      Json::null(),
+    ),
+  )
+  assert_true(
+    service_completed(
+      "stop",
+      { "registration": "not_registered", "writer_active": false },
+      Json::null(),
+    ),
+  )
+}
+
+///|
+test "approval and missing definitions cannot report completion" {
+  let approval = service_completed(
+    "start",
+    { "registration": "requires_approval", "writer_active": false },
+    (123).to_json(),
+  ).to_string() catch {
     error => error.to_string()
   }
-  assert_true(message.contains("service definition not found"))
+  assert_true(approval.contains("Approval required"))
+  let missing = service_completed(
+    "stop",
+    { "registration": "not_found", "writer_active": false },
+    Json::null(),
+  ).to_string() catch {
+    error => error.to_string()
+  }
+  assert_true(missing.contains("service definition not found"))
 }

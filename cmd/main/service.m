@@ -44,6 +44,7 @@ static pid_t writerPID(NSError *_Nullable *_Nonnull error) {
 }
 
 static int launchctl(NSArray<NSString *> *arguments,
+                     NSString *_Nullable *_Nullable outputText,
                      NSError *_Nullable *_Nonnull error) {
   NSTask *task = [NSTask new];
   task.executableURL = [NSURL fileURLWithPath:@"/bin/launchctl"];
@@ -55,9 +56,11 @@ static int launchctl(NSArray<NSString *> *arguments,
     return -1;
   NSData *message = [output.fileHandleForReading readDataToEndOfFile];
   [task waitUntilExit];
+  NSString *description =
+      [[NSString alloc] initWithData:message encoding:NSUTF8StringEncoding];
+  if (outputText)
+    *outputText = description;
   if (task.terminationStatus != 0 && task.terminationStatus != ESRCH) {
-    NSString *description =
-        [[NSString alloc] initWithData:message encoding:NSUTF8StringEncoding];
     *error = as_failure(description.length ? description : @"launchctl failed");
   }
   return task.terminationStatus;
@@ -152,14 +155,24 @@ id as_service_request(NSDictionary *input, NSError **error) {
   }
   NSString *target = [NSString stringWithFormat:@"gui/%u/%@", getuid(), label];
   if ([op isEqual:@"service_signal"]) {
-    int code = launchctl(@[ @"kill", @"SIGTERM", target ], error);
+    int code = launchctl(@[ @"kill", @"SIGTERM", target ], NULL, error);
     return code == 0 ? @YES : @NO;
   }
   if ([op isEqual:@"service_kickstart"]) {
-    int code = launchctl(@[ @"kickstart", target ], error);
-    if (code != 0 && !*error)
-      *error = as_failure(@"registered launch agent was not found");
-    return NSNull.null;
+    NSString *output = nil;
+    int code = launchctl(@[ @"kickstart", @"-p", target ], &output, error);
+    if (code != 0) {
+      if (!*error)
+        *error = as_failure(@"registered launch agent was not found");
+      return nil;
+    }
+    NSScanner *scanner = [NSScanner scannerWithString:output ?: @""];
+    int pid = 0;
+    if (![scanner scanInt:&pid] || !scanner.isAtEnd || pid <= 0) {
+      *error = as_failure(@"launchctl did not return a valid service PID");
+      return nil;
+    }
+    return @(pid);
   }
   *error = as_failure(@"unknown service operation");
   return nil;

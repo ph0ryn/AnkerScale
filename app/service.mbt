@@ -124,7 +124,13 @@ fn service_action_result(options : Options) -> Unit raise {
   if options.json {
     service_status(options)
   } else {
-    println(service_action_text(options.positional[0], os("service_probe")))
+    println(
+      if options.positional[0] == "start" {
+        "Service started."
+      } else {
+        "Service stopped."
+      },
+    )
   }
 }
 
@@ -152,12 +158,14 @@ fn service(options : Options) -> Unit raise {
         if registry.source == "legacy" {
           write_registry(registry, registry.devices)
         }
-        if status == "enabled" {
-          ignore(os("service_kickstart"))
-        } else if status != "requires_approval" {
+        if status != "enabled" && status != "requires_approval" {
           ignore(os("service_register"))
         }
       })
+      // Approval must be granted before launchctl can start the agent.
+      ignore(service_completed("start", os("service_probe"), Json::null()))
+      let pid = os("service_kickstart")
+      wait_for_service("start", pid)
       service_action_result(options)
     }
     "stop" => {
@@ -180,6 +188,7 @@ fn service(options : Options) -> Unit raise {
         }
         ignore(os("service_unregister"))
       }
+      wait_for_service("stop", Json::null())
       service_action_result(options)
     }
     "run" => {
@@ -195,4 +204,67 @@ fn service(options : Options) -> Unit raise {
     }
     _ => raise UsageError("service requires start, stop, or status")
   }
+}
+
+///|
+fn service_completed(command : String, probe : Json, pid : Json) -> Bool raise {
+  let registration = string_field(probe, "registration")
+  if registration == "not_found" {
+    raise DataError(
+      "service definition not found; check ankerscale service status",
+    )
+  }
+  let active : Bool = @json.from_json(field(probe, "writer_active"))
+  if command == "start" {
+    if registration == "requires_approval" {
+      raise DataError(
+        "Approval required. Allow AnkerScale in System Settings > General > Login Items, then run ankerscale service start again.",
+      )
+    }
+    if registration != "enabled" {
+      raise DataError(
+        "service did not become enabled; check ankerscale service status",
+      )
+    }
+    return active && pid != Json::null() && field(probe, "writer_pid") == pid
+  }
+  registration == "not_registered" && !active
+}
+
+///|
+fn wait_for_service(command : String, pid : Json) -> Unit raise {
+  let deadline = number_field(os("now"), "mono_ms") + 10000
+  while true {
+    let probe = os("service_probe")
+    if service_completed(command, probe, pid) &&
+      (command == "stop" || service_initialized(probe, pid)) {
+      return
+    }
+    if number_field(os("now"), "mono_ms") >= deadline {
+      raise DataError(
+        "service \{command} did not complete within 10 seconds; check ankerscale service status and collector.log",
+      )
+    }
+    ignore(os("service_wait"))
+  }
+}
+
+///|
+fn service_initialized(probe : Json, pid : Json) -> Bool raise {
+  if !@json.from_json(field(probe, "database_exists")) {
+    return false
+  }
+  let db = @native.open(string_field(probe, "database"), writable=false)
+  defer db.close()
+  // A fresh database may still be inside its schema creation transaction.
+  if int_field(db.query("PRAGMA user_version")[0], "user_version") == 0 {
+    return false
+  }
+  schema(db, writable=false)
+  let runs = db.query(
+    "SELECT detail FROM events WHERE kind='started' ORDER BY id DESC LIMIT 1",
+  )
+  !runs.is_empty() &&
+  field(@json.parse(string_field(runs[0], "detail")), "pid") == pid &&
+  service_completed("start", os("service_probe"), pid)
 }

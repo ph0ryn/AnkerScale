@@ -111,35 +111,3 @@ fn service_text(value : Json) -> String raise {
   }
   lines.join("\n")
 }
-
-///|
-fn service_action_text(command : String, probe : Json) -> String raise {
-  let registration = string_field(probe, "registration")
-  let active : Bool = @json.from_json(field(probe, "writer_active"))
-  if command == "stop" {
-    if registration == "not_found" {
-      raise DataError(
-        "service definition not found; check ankerscale service status",
-      )
-    }
-    if registration != "not_registered" {
-      raise DataError(
-        "service is still registered; check ankerscale service status",
-      )
-    }
-    return if active {
-      "Login service disabled. A collector is still running. Check ankerscale service status."
-    } else {
-      "Service stopped."
-    }
-  }
-  match registration {
-    "requires_approval" =>
-      "Approval required. Allow AnkerScale in System Settings > General > Login Items."
-    "enabled" => "Start requested. Check ankerscale service status."
-    _ =>
-      raise DataError(
-        "service did not become enabled; check ankerscale service status",
-      )
-  }
-}
