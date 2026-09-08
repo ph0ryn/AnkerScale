@@ -65,12 +65,22 @@ fn event_log(
 }
 
 ///|
-fn send(action : @protocol.Action) -> Unit raise {
+fn send(command : @protocol.CollectionCommand) -> Unit raise {
+  let (device, attempt, action) = match command {
+    Scan => {
+      ignore(os("ble_scan"))
+      return
+    }
+    StopScan => {
+      ignore(os("ble_stop_scan"))
+      return
+    }
+    Device(device, attempt, action) => (device, attempt, action)
+  }
   let request : Json = match action {
-    Scan => { "op": "ble_scan" }
-    StopScan => { "op": "ble_stop_scan" }
-    Connect(device, attempt) =>
-      { "op": "ble_connect", "device": device, "attempt": attempt }
+    Scan | StopScan =>
+      raise DataError("device controller cannot own the shared scan")
+    Connect(_, _) => { "op": "ble_connect" }
     Discover => { "op": "ble_discover" }
     Subscribe =>
       { "op": "ble_subscribe", "service": "FFF0", "characteristic": "FFF4" }
@@ -99,50 +109,159 @@ fn send(action : @protocol.Action) -> Unit raise {
       }
     }
   }
-  ignore(@native.call(request))
+  let fields : Map[String, Json] = @json.from_json(request)
+  fields["device"] = device.to_json()
+  fields["attempt"] = attempt.to_json()
+  ignore(@native.call(fields.to_json()))
 }
 
 ///|
-fn drive(
-  db : @native.Database,
-  run_id : String,
-  controller : @protocol.Controller,
-  event : @protocol.CollectionEvent,
-  attempt : Int,
-  now : Double,
+priv struct DeviceState {
+  phase : @protocol.Phase
+  attempt : Int
+  error : String?
+} derive(Eq)
+
+///|
+priv struct Collection {
+  db : @native.Database
+  run_id : String
+  controller : @protocol.Collector
+  states : Map[String, DeviceState]
+}
+
+///|
+fn Collection::log_state(
+  self : Collection,
+  device : String,
+  state : DeviceState,
 ) -> Unit raise {
-  let previous = controller.phase
-  let actions = if @json.from_json(os("stopping")) {
-    controller.handle(Stop, controller.attempt, now) +
-    controller.handle(event, attempt, now)
-  } else {
-    controller.handle(event, attempt, now)
+  let error : Json = match state.error {
+    Some(message) => message.to_json()
+    None => Json::null()
   }
-  if previous != controller.phase {
-    let detail : Json = {
-      "phase": @debug.to_string(controller.phase),
-      "attempt": controller.attempt,
+  let detail : Json = {
+    "device": device,
+    "phase": @debug.to_string(state.phase),
+    "attempt": state.attempt,
+    "error": error,
+  }
+  event_log(self.db, self.run_id, "state", detail)
+  @native.stderr(detail.stringify())
+}
+
+///|
+fn Collection::record_states(self : Collection) -> Unit raise {
+  for device in self.states.keys().to_array() {
+    if !self.controller.controllers.contains(device) {
+      let previous = self.states[device]
+      self.log_state(device, { ..previous, phase: @protocol.Stopped, })
+      self.states.remove(device)
     }
-    event_log(db, run_id, "state", detail)
-    @native.stderr(detail.stringify())
   }
-  for action in actions {
-    send(action) catch {
+  for device, controller in self.controller.controllers {
+    let error = match controller.failure {
+      Some(_) => controller.failure
+      None => controller.last_error
+    }
+    let state : DeviceState = {
+      phase: controller.phase,
+      attempt: controller.attempt,
+      error,
+    }
+    if self.states.get(device) != Some(state) {
+      self.log_state(device, state)
+      if state.error is Some(message) &&
+        self.states.get(device).map(previous => previous.error) !=
+        Some(state.error) {
+        event_log(self.db, self.run_id, "device_error", {
+          "device": device,
+          "attempt": state.attempt,
+          "message": message,
+        })
+      }
+      self.states[device] = state
+    }
+  }
+}
+
+///|
+fn Collection::execute(
+  self : Collection,
+  commands : Array[@protocol.CollectionCommand],
+) -> Unit raise {
+  let mut pending = commands
+  let mut index = 0
+  self.record_states()
+  while index < pending.length() {
+    if @json.from_json(os("stopping")) && !self.controller.stopping {
+      pending = self.controller.handle(
+        Stop,
+        "",
+        0,
+        number_field(os("now"), "mono_ms"),
+      )
+      index = 0
+      self.record_states()
+      continue
+    }
+    let command = pending[index]
+    index += 1
+    if self.controller.stopping {
+      match command {
+        StopScan | Device(_, _, Disconnect) => ()
+        _ => continue
+      }
+    }
+    send(command) catch {
       error => {
-        event_log(db, run_id, "command_error", { "message": error.to_string() })
-        @native.stderr(error.to_string())
-        let recovery = controller.handle(
-          @protocol.Failed,
-          controller.attempt,
-          now,
-        )
-        for command in recovery {
-          send(command)
+        let now = number_field(os("now"), "mono_ms")
+        let (device, attempt) = match command {
+          Device(device, attempt, _) => (device, attempt)
+          _ => ("", 0)
         }
-        break
+        let detail : Json = {
+          "device": device,
+          "attempt": attempt,
+          "message": error.to_string(),
+        }
+        event_log(
+          self.db,
+          self.run_id,
+          if device.is_empty() {
+            "command_error"
+          } else {
+            "device_error"
+          },
+          detail,
+        )
+        @native.stderr(detail.stringify())
+        let recovery = match command {
+          Scan => self.controller.handle(Failed, "", 0, now)
+          Device(_, _, Disconnect) | StopScan =>
+            self.controller.handle(Fatal(error.to_string()), "", 0, now)
+          Device(_, _, _) =>
+            self.controller.handle(Failed, device, attempt, now)
+        }
+        pending = pending + recovery
+        self.record_states()
       }
     }
   }
+}
+
+///|
+fn Collection::advance(
+  self : Collection,
+  event : @protocol.CollectionEvent,
+  device : String,
+  attempt : Int,
+) -> Unit raise {
+  let now = number_field(os("now"), "mono_ms")
+  if @json.from_json(os("stopping")) && !self.controller.stopping {
+    self.execute(self.controller.handle(Stop, "", 0, now))
+  }
+  self.execute(self.controller.handle(event, device, attempt, now))
 }
 
 ///|
@@ -164,12 +283,16 @@ fn save_event(
       let reading = @protocol.parse_t9120(hex_decode(incoming.hex))
       if reading is Stable(value) {
         println(
-          "\{incoming.utc}  \{@protocol.weight_text(value.weight_centi_kg)} kg",
+          "\{incoming.utc}  \{incoming.device}  \{@protocol.weight_text(value.weight_centi_kg)} kg",
         )
       }
     }
   } else {
     event_log(db, run_id, kind, event)
+    if kind == "failed" ||
+      event is { "event": String("disconnected"), "failed": True, .. } {
+      event_log(db, run_id, "device_error", event)
+    }
     if kind == "profile" || kind == "device" {
       db.exec(
         "INSERT INTO devices VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,services=excluded.services,last_seen=excluded.last_seen",
@@ -216,16 +339,30 @@ fn collection_event(event : Json) -> @protocol.CollectionEvent raise {
 }
 
 ///|
-fn collect(db : @native.Database, target : String) -> Unit raise {
+fn collect(db : @native.Database, initial : Registry) -> Unit raise {
   let run_id : String = @json.from_json(os("uuid"))
-  let controller = @protocol.Controller::new(target)
-  ignore(@native.call({ "op": "ble_start", "device": target }))
+  let collection : Collection = {
+    db,
+    run_id,
+    controller: @protocol.Collector::new(
+      initial.devices.map(device => device.id),
+    ),
+    states: Map([]),
+  }
+  let mut registry = initial
+  let mut reload_at = number_field(os("now"), "mono_ms") + 1000
+  ignore(
+    @native.call({
+      "op": "ble_start",
+      "devices": registry.devices.map(device => device.id),
+    }),
+  )
   let mut closed = false
   let mut pending : Array[Json] = []
   let mut processed = 0
   defer {
-    // A storage failure is fatal. Stop OS activity and report any pending raw
-    // on stderr so it is not silently discarded when the database is unusable.
+    // A storage failure is fatal. Retain any uncommitted notifications on stderr
+    // instead of pretending that closing the transport saved them.
     if !closed {
       let remaining : Array[Json] = @json.from_json(os("ble_close")) catch {
         error => {
@@ -242,45 +379,80 @@ fn collect(db : @native.Database, target : String) -> Unit raise {
       )
     }
   }
-  event_log(db, run_id, "started", { "device": target })
-  while controller.phase != @protocol.Stopped {
+  event_log(db, run_id, "started", {
+    "devices": registry.devices,
+    "pid": os("pid"),
+  })
+  collection.record_states()
+  while !collection.controller.stopped() {
     let now = number_field(os("now"), "mono_ms")
     if @json.from_json(os("stopping")) {
-      drive(db, run_id, controller, Stop, controller.attempt, now)
+      collection.advance(Stop, "", 0)
     }
-    if controller.phase == @protocol.Stopped {
+    if now >= reload_at && !collection.controller.stopping {
+      let next = read_registry(allow_legacy=registry.source != "current") catch {
+        error => {
+          collection.advance(
+            Fatal("cannot reload device registrations: \{error}"),
+            "",
+            0,
+          )
+          continue
+        }
+      }
+      if next.source == "missing" {
+        collection.advance(Fatal("device registration file disappeared"), "", 0)
+      } else {
+        if next.devices != registry.devices {
+          ignore(
+            @native.call({
+              "op": "ble_targets",
+              "devices": next.devices.map(device => device.id),
+            }),
+          )
+          collection.execute(
+            collection.controller.update_devices(
+              next.devices.map(device => device.id),
+              now,
+            ),
+          )
+          event_log(db, run_id, "registrations_changed", {
+            "devices": next.devices,
+          })
+        }
+        registry = next
+      }
+      reload_at = now + 1000
+    }
+    if collection.controller.stopped() {
       break
     }
+    let wait = collection.controller.wait_ms(now)
+    let timeout = if collection.controller.stopping {
+      wait
+    } else {
+      wait.min((reload_at - now).max(0).to_int())
+    }
     pending = @json.from_json(
-      @native.call({ "op": "ble_poll", "timeout_ms": controller.wait_ms(now) }),
+      @native.call({ "op": "ble_poll", "timeout_ms": timeout }),
     )
     processed = 0
     for event in pending {
       save_event(db, run_id, event)
       processed += 1
       let attempt : Int = @json.from_json(field(event, "attempt"))
-      drive(
-        db,
-        run_id,
-        controller,
-        collection_event(event),
-        attempt,
-        number_field(os("now"), "mono_ms"),
-      )
+      let device = match event {
+        { "device": String(device), .. } => device
+        _ => ""
+      }
+      collection.advance(collection_event(event), device, attempt)
     }
-    drive(
-      db,
-      run_id,
-      controller,
-      Tick,
-      controller.attempt,
-      number_field(os("now"), "mono_ms"),
-    )
+    collection.advance(Tick, "", 0)
   }
   pending = @json.from_json(os("ble_close"))
   processed = 0
   closed = true
-  let mut failure = controller.failure
+  let mut failure = collection.controller.failure
   for event in pending {
     save_event(db, run_id, event)
     processed += 1
@@ -288,64 +460,12 @@ fn collect(db : @native.Database, target : String) -> Unit raise {
       failure = Some(string_field(event, "message"))
     }
   }
-  event_log(db, run_id, "stopped", { "error": failure })
+  let error : Json = match failure {
+    Some(message) => message.to_json()
+    None => Json::null()
+  }
+  event_log(db, run_id, "stopped", { "error": error })
   if failure is Some(message) {
     raise DataError(message)
   }
-}
-
-///|
-fn devices(options : Options) -> Unit raise {
-  let seconds = match options.values.get("--seconds") {
-    None => 10
-    Some(value) =>
-      @string.parse_int(value) catch {
-        _ => raise UsageError("seconds must be from 1 to 300")
-      }
-  }
-  if seconds < 1 || seconds > 300 {
-    raise UsageError("seconds must be from 1 to 300")
-  }
-  ignore(@native.call({ "op": "ble_start" }))
-  defer ignore(
-    os("ble_close") catch {
-      error => {
-        @native.stderr(error.to_string())
-        Json::null()
-      }
-    },
-  )
-  let start = number_field(os("now"), "mono_ms")
-  let seen : Set[String] = Set([])
-  let mut powered = false
-  while number_field(os("now"), "mono_ms") - start < seconds.to_double() * 1000 {
-    let events : Array[Json] = @json.from_json(
-      @native.call({ "op": "ble_poll", "timeout_ms": 1000 }),
-    )
-    for event in events {
-      match collection_event(event) {
-        PoweredOn => {
-          powered = true
-          ignore(os("ble_scan"))
-        }
-        PoweredOff => {
-          powered = false
-          @native.stderr("Waiting for Bluetooth to be powered on.")
-        }
-        Fatal(message) => raise DataError(message)
-        Found(id) =>
-          if !seen.contains(id) {
-            seen.add(id)
-            println(event.stringify())
-          }
-        _ => ()
-      }
-    }
-  }
-  if !powered {
-    raise DataError("Bluetooth was not powered on before the scan deadline")
-  }
-  @native.stderr(
-    "Found \{seen.length()} devices. Select the scale UUID with --device.",
-  )
 }

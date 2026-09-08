@@ -22,7 +22,7 @@ static BOOL bundled(NSError *_Nullable *_Nonnull error) {
   return YES;
 }
 
-static BOOL writerActive(NSError *_Nullable *_Nonnull error) {
+static pid_t writerPID(NSError *_Nullable *_Nonnull error) {
   NSString *path = [as_data_directory()
       stringByAppendingPathComponent:@"records.sqlite3.lock"];
   int fd =
@@ -31,7 +31,7 @@ static BOOL writerActive(NSError *_Nullable *_Nonnull error) {
     if (errno != ENOENT)
       *error = as_failure([NSString
           stringWithFormat:@"cannot read writer lock: %s", strerror(errno)]);
-    return NO;
+    return 0;
   }
   // Query without briefly taking the lock and racing a new collector.
   struct flock lock = {
@@ -40,7 +40,7 @@ static BOOL writerActive(NSError *_Nullable *_Nonnull error) {
     *error = as_failure([NSString
         stringWithFormat:@"cannot inspect writer lock: %s", strerror(errno)]);
   close(fd);
-  return lock.l_type != F_UNLCK;
+  return lock.l_type != F_UNLCK ? lock.l_pid : 0;
 }
 
 static int launchctl(NSArray<NSString *> *arguments,
@@ -66,15 +66,9 @@ static int launchctl(NSArray<NSString *> *arguments,
 id as_service_request(NSDictionary *input, NSError **error) {
   NSString *op = input[@"op"];
   NSString *directory = as_data_directory();
-  NSString *config = [directory stringByAppendingPathComponent:@"service.json"];
+  NSString *config = [directory stringByAppendingPathComponent:@"devices.json"];
   NSFileManager *fm = NSFileManager.defaultManager;
-  if ([op isEqual:@"service_config_read"]) {
-    NSData *data = [NSData dataWithContentsOfFile:config options:0 error:error];
-    if (!data)
-      return nil;
-    return [NSJSONSerialization JSONObjectWithData:data options:0 error:error];
-  }
-  if ([op isEqual:@"service_config_write"] || [op isEqual:@"service_log"]) {
+  if ([op isEqual:@"service_log"]) {
     umask(0077);
     if (![fm createDirectoryAtPath:directory
             withIntermediateDirectories:YES
@@ -83,17 +77,6 @@ id as_service_request(NSDictionary *input, NSError **error) {
                              }
                                   error:error])
       return nil;
-    if ([op isEqual:@"service_config_write"]) {
-      NSData *data = [NSJSONSerialization
-          dataWithJSONObject:@{@"device" : input[@"device"]}
-                     options:NSJSONWritingPrettyPrinted
-                       error:error];
-      if (!data || ![data writeToFile:config
-                              options:NSDataWritingAtomic
-                                error:error])
-        return nil;
-      return NSNull.null;
-    }
     NSString *path =
         [directory stringByAppendingPathComponent:@"collector.log"];
     int fd = open(path.fileSystemRepresentation,
@@ -125,18 +108,24 @@ id as_service_request(NSDictionary *input, NSError **error) {
     NSArray *states =
         @[ @"not_registered", @"enabled", @"requires_approval", @"not_found" ];
     SMAppServiceStatus status = service.status;
-    BOOL active = writerActive(error);
+    pid_t writer = writerPID(error);
     if (*error)
       return nil;
     return @{
       @"registration" : states[status],
-      @"writer_active" : @(active),
+      @"writer_active" : writer ? @YES : @NO,
+      @"writer_pid" : writer ? @(writer) : NSNull.null,
       @"database" :
           [directory stringByAppendingPathComponent:@"records.sqlite3"],
       @"database_exists" :
           @([fm fileExistsAtPath:[directory stringByAppendingPathComponent:
                                                 @"records.sqlite3"]]),
-      @"config_exists" : @([fm fileExistsAtPath:config]),
+      @"config_exists" :
+              ([fm fileExistsAtPath:config] ||
+               [fm fileExistsAtPath:[directory stringByAppendingPathComponent:
+                                                   @"service.json"]])
+          ? @YES
+          : @NO,
       @"log" : [directory stringByAppendingPathComponent:@"collector.log"],
       @"bundle" : NSBundle.mainBundle.bundlePath
     };
@@ -164,7 +153,7 @@ id as_service_request(NSDictionary *input, NSError **error) {
   NSString *target = [NSString stringWithFormat:@"gui/%u/%@", getuid(), label];
   if ([op isEqual:@"service_signal"]) {
     int code = launchctl(@[ @"kill", @"SIGTERM", target ], error);
-    return @(code == 0);
+    return code == 0 ? @YES : @NO;
   }
   if ([op isEqual:@"service_kickstart"]) {
     int code = launchctl(@[ @"kickstart", target ], error);

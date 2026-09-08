@@ -1,29 +1,49 @@
 #include "platform.h"
 #import <CoreBluetooth/CoreBluetooth.h>
 
+@class ASBluetooth;
+
+// Each connection owns its delegate and generation. Buffered callbacks retain
+// their original device/attempt instead of borrowing a global current target.
+@interface ASConnection : NSObject <CBPeripheralDelegate>
+@property(weak) ASBluetooth *owner;
+@property CBPeripheral *peripheral;
+@property NSInteger attempt;
+@property NSMutableDictionary<NSString *, CBCharacteristic *> *characteristics;
+@property NSMutableArray<NSDictionary *> *writes;
+@property NSUInteger pendingServices;
+@property BOOL disconnecting;
+- (BOOL)current;
+- (void)emit:(NSDictionary *)event;
+- (void)flushWrites;
+@end
+
 // CoreBluetooth objects stay on worker. Event dictionaries own copies of all
 // payloads; MoonBit allocation and decoding happen only on the calling thread.
-@interface ASBluetooth
-    : NSObject <CBCentralManagerDelegate, CBPeripheralDelegate>
+@interface ASBluetooth : NSObject <CBCentralManagerDelegate>
 @property dispatch_queue_t worker;
 @property dispatch_semaphore_t ready;
 @property NSLock *eventLock;
 @property NSMutableArray<NSDictionary *> *events;
 @property NSMutableDictionary<NSString *, CBPeripheral *> *devices;
-@property NSMutableDictionary<NSString *, CBCharacteristic *> *characteristics;
-@property NSMutableArray<NSDictionary *> *writes;
+@property NSMutableDictionary<NSString *, ASConnection *> *connections;
+@property NSSet<NSString *> *targets;
 @property CBCentralManager *central;
-@property CBPeripheral *peripheral;
-@property NSString *target;
-@property NSInteger attempt;
 @property NSInteger sequence;
-@property NSUInteger pendingServices;
 @property NSUInteger dropped;
 @property BOOL closed;
 - (void)emit:(NSDictionary *)event;
 - (NSArray *)drain;
-- (void)flushWrites;
+- (void)cancelConnections;
 @end
+
+static NSString *hexString(NSData *data) {
+  const uint8_t *bytes = data.bytes;
+  NSMutableString *hex = [NSMutableString stringWithCapacity:data.length * 2];
+  for (NSUInteger i = 0; i < data.length; i++)
+    [hex appendFormat:@"%02x", bytes[i]];
+  return hex;
+}
 
 @implementation ASBluetooth
 - (instancetype)init {
@@ -34,10 +54,21 @@
     _eventLock = [NSLock new];
     _events = [NSMutableArray array];
     _devices = [NSMutableDictionary dictionary];
-    _characteristics = [NSMutableDictionary dictionary];
-    _writes = [NSMutableArray array];
+    _connections = [NSMutableDictionary dictionary];
   }
   return self;
+}
+
+- (void)cancelConnections {
+  [self.central stopScan];
+  for (ASConnection *connection in self.connections.allValues) {
+    [connection.writes removeAllObjects];
+    if (!connection.disconnecting &&
+        self.central.state == CBManagerStatePoweredOn) {
+      connection.disconnecting = YES;
+      [self.central cancelPeripheralConnection:connection.peripheral];
+    }
+  }
 }
 
 - (void)emit:(NSDictionary *)event {
@@ -48,14 +79,14 @@
   record[@"mono_ms"] = @((int64_t)as_monotonic_ms());
   record[@"seq"] = @(++self.sequence);
   if (!record[@"attempt"])
-    record[@"attempt"] = @(self.attempt);
+    record[@"attempt"] = @0;
   [self.eventLock lock];
   if (self.events.count >= 1024 || self.dropped) {
+    BOOL first = self.dropped == 0;
     self.dropped++;
     [self.eventLock unlock];
-    [self.central stopScan];
-    if (self.peripheral)
-      [self.central cancelPeripheralConnection:self.peripheral];
+    if (first)
+      [self cancelConnections];
     return;
   }
   BOOL wake = self.events.count == 0;
@@ -86,16 +117,14 @@
 }
 
 - (void)centralManagerDidUpdateState:(CBCentralManager *)central {
-  [self emit:@{
-    @"event" : @"power",
-    @"state" : @(central.state),
-    @"attempt" : @0
-  }];
+  [self emit:@{@"event" : @"power", @"state" : @(central.state)}];
   if (central.state != CBManagerStatePoweredOn) {
-    self.peripheral.delegate = nil;
-    self.peripheral = nil;
-    [self.characteristics removeAllObjects];
-    [self.writes removeAllObjects];
+    for (ASConnection *connection in self.connections.allValues) {
+      connection.peripheral.delegate = nil;
+      [connection.writes removeAllObjects];
+    }
+    [self.connections removeAllObjects];
+    [self.devices removeAllObjects];
   }
 }
 
@@ -105,33 +134,35 @@
                      RSSI:(NSNumber *)RSSI {
   (void)central;
   NSString *identifier = peripheral.identifier.UUIDString;
-  if (self.target.length && ![self.target isEqual:identifier])
+  if (self.targets && ![self.targets containsObject:identifier])
     return;
   if (!self.devices[identifier] && self.devices.count >= 512) {
     [self emit:@{
       @"event" : @"fatal",
       @"message" : @"device discovery capacity exceeded"
     }];
-    [self.central stopScan];
+    [self cancelConnections];
     return;
   }
   self.devices[identifier] = peripheral;
   NSMutableArray *services = [NSMutableArray array];
   for (CBUUID *uuid in advertisementData[CBAdvertisementDataServiceUUIDsKey])
     [services addObject:uuid.UUIDString];
-  NSMutableDictionary *event = [@{ @"event": @"device", @"device": identifier,
-      @"name": advertisementData[CBAdvertisementDataLocalNameKey] ?: peripheral.name ?: @"",
-      @"services": services, @"rssi": RSSI, @"attempt": @0 } mutableCopy];
+  NSMutableDictionary *event = [@{
+    @"event" : @"device", @"device" : identifier,
+    @"name" : advertisementData[CBAdvertisementDataLocalNameKey] ?: peripheral.name ?: @"",
+    @"services" : services, @"rssi" : RSSI
+  } mutableCopy];
   NSData *manufacturer =
       advertisementData[CBAdvertisementDataManufacturerDataKey];
   if (manufacturer)
-    event[@"manufacturer_hex"] = [self hex:manufacturer];
+    event[@"manufacturer_hex"] = hexString(manufacturer);
   NSDictionary<CBUUID *, NSData *> *serviceData =
       advertisementData[CBAdvertisementDataServiceDataKey];
   if (serviceData) {
     NSMutableDictionary *payloads = [NSMutableDictionary dictionary];
     for (CBUUID *uuid in serviceData)
-      payloads[uuid.UUIDString] = [self hex:serviceData[uuid]];
+      payloads[uuid.UUIDString] = hexString(serviceData[uuid]);
     event[@"service_data_hex"] = payloads;
   }
   if (advertisementData[CBAdvertisementDataIsConnectable])
@@ -141,47 +172,76 @@
   [self emit:event];
 }
 
+- (ASConnection *)connectionFor:(CBPeripheral *)peripheral {
+  ASConnection *connection = self.connections[peripheral.identifier.UUIDString];
+  return connection.peripheral == peripheral ? connection : nil;
+}
+
 - (void)centralManager:(CBCentralManager *)central
     didConnectPeripheral:(CBPeripheral *)peripheral {
   (void)central;
-  if (peripheral != self.peripheral)
+  ASConnection *connection = [self connectionFor:peripheral];
+  if (connection && !connection.disconnecting)
+    [connection emit:@{@"event" : @"connected"}];
+}
+
+- (void)finishConnection:(CBPeripheral *)peripheral
+                 message:(NSString *)message
+                  failed:(BOOL)failed {
+  ASConnection *connection = [self connectionFor:peripheral];
+  if (!connection)
     return;
-  [self emit:@{
-    @"event" : @"connected",
-    @"device" : peripheral.identifier.UUIDString
+  [connection emit:@{
+    @"event" : @"disconnected",
+    @"message" : message,
+    @"failed" : @(failed)
   }];
+  peripheral.delegate = nil;
+  [connection.writes removeAllObjects];
+  [self.connections removeObjectForKey:peripheral.identifier.UUIDString];
 }
 
 - (void)centralManager:(CBCentralManager *)central
     didFailToConnectPeripheral:(CBPeripheral *)peripheral
                          error:(NSError *)error {
   (void)central;
-  if (peripheral != self.peripheral)
-    return;
-  // didFailToConnect also completes cancellation of a pending connection.
-  [self emit:@{
-    @"event" : @"disconnected",
-    @"stage" : @"connect",
-    @"message" : error.localizedDescription ?: @"connection failed"
-  }];
-  self.peripheral.delegate = nil;
-  self.peripheral = nil;
+  ASConnection *connection = [self connectionFor:peripheral];
+  [self finishConnection:peripheral
+                 message:error.localizedDescription ?: @"connection failed"
+                  failed:!connection.disconnecting];
 }
 
 - (void)centralManager:(CBCentralManager *)central
     didDisconnectPeripheral:(CBPeripheral *)peripheral
                       error:(NSError *)error {
   (void)central;
-  if (peripheral != self.peripheral)
+  [self finishConnection:peripheral
+                 message:error.localizedDescription ?: @"disconnected"
+                  failed:error != nil];
+}
+@end
+
+@implementation ASConnection
+- (instancetype)init {
+  if ((self = [super init])) {
+    _characteristics = [NSMutableDictionary dictionary];
+    _writes = [NSMutableArray array];
+  }
+  return self;
+}
+
+- (BOOL)current {
+  return self.owner && !self.owner.closed &&
+         self.owner.connections[self.peripheral.identifier.UUIDString] == self;
+}
+
+- (void)emit:(NSDictionary *)event {
+  if (![self current])
     return;
-  [self emit:@{
-    @"event" : @"disconnected",
-    @"message" : error.localizedDescription ?: @"disconnected"
-  }];
-  self.peripheral.delegate = nil;
-  self.peripheral = nil;
-  [self.characteristics removeAllObjects];
-  [self.writes removeAllObjects];
+  NSMutableDictionary *record = [event mutableCopy];
+  record[@"device"] = self.peripheral.identifier.UUIDString;
+  record[@"attempt"] = @(self.attempt);
+  [self.owner emit:record];
 }
 
 - (void)profile {
@@ -204,7 +264,6 @@
   }
   [self emit:@{
     @"event" : @"profile",
-    @"device" : self.peripheral.identifier.UUIDString,
     @"name" : self.peripheral.name ?: @"",
     @"services" : services
   }];
@@ -212,7 +271,7 @@
 
 - (void)peripheral:(CBPeripheral *)peripheral
     didDiscoverServices:(NSError *)error {
-  if (peripheral != self.peripheral)
+  if (![self current] || peripheral != self.peripheral || self.disconnecting)
     return;
   if (error) {
     [self
@@ -230,7 +289,7 @@
     didDiscoverCharacteristicsForService:(CBService *)service
                                    error:(NSError *)error {
   (void)service;
-  if (peripheral != self.peripheral)
+  if (![self current] || peripheral != self.peripheral || self.disconnecting)
     return;
   if (error) {
     [self
@@ -245,7 +304,7 @@
     didUpdateNotificationStateForCharacteristic:
         (CBCharacteristic *)characteristic
                                           error:(NSError *)error {
-  if (peripheral != self.peripheral)
+  if (![self current] || peripheral != self.peripheral || self.disconnecting)
     return;
   if (error || !characteristic.isNotifying) {
     [self emit:@{
@@ -262,25 +321,16 @@
   }];
 }
 
-- (NSString *)hex:(NSData *)data {
-  const uint8_t *bytes = data.bytes;
-  NSMutableString *hex = [NSMutableString stringWithCapacity:data.length * 2];
-  for (NSUInteger i = 0; i < data.length; i++)
-    [hex appendFormat:@"%02x", bytes[i]];
-  return hex;
-}
-
 - (void)packet:(NSData *)data
     characteristic:(CBCharacteristic *)characteristic
          direction:(NSString *)direction {
   [self emit:@{
     @"event" : @"packet",
-    @"device" : self.peripheral.identifier.UUIDString,
     @"name" : self.peripheral.name ?: @"",
     @"service" : characteristic.service.UUID.UUIDString,
     @"characteristic" : characteristic.UUID.UUIDString,
     @"direction" : direction,
-    @"hex" : [self hex:data],
+    @"hex" : hexString(data),
     @"session" : [NSString stringWithFormat:@"%ld", (long)self.attempt]
   }];
 }
@@ -288,7 +338,9 @@
 - (void)peripheral:(CBPeripheral *)peripheral
     didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic
                               error:(NSError *)error {
-  if (peripheral != self.peripheral)
+  // Keep already-received notifications during cancellation until disconnect
+  // completes. They still belong to this connection's immutable generation.
+  if (![self current] || peripheral != self.peripheral)
     return;
   if (error) {
     [self
@@ -303,7 +355,7 @@
 - (void)peripheral:(CBPeripheral *)peripheral
     didModifyServices:(NSArray<CBService *> *)invalidatedServices {
   (void)invalidatedServices;
-  if (peripheral == self.peripheral)
+  if ([self current] && peripheral == self.peripheral && !self.disconnecting)
     [self emit:@{
       @"event" : @"failed",
       @"message" : @"GATT services changed; reconnect required"
@@ -316,7 +368,8 @@
 }
 
 - (void)flushWrites {
-  while (self.writes.count && self.peripheral.canSendWriteWithoutResponse) {
+  while ([self current] && !self.disconnecting && self.writes.count &&
+         self.peripheral.canSendWriteWithoutResponse) {
     NSDictionary *write = self.writes[0];
     [self.writes removeObjectAtIndex:0];
     CBCharacteristic *characteristic = write[@"characteristic"];
@@ -345,7 +398,8 @@ id as_ble_request(NSDictionary *input, NSError **error) {
       return nil;
     }
     bluetooth = [ASBluetooth new];
-    bluetooth.target = input[@"device"] ?: @"";
+    if (input[@"devices"])
+      bluetooth.targets = [NSSet setWithArray:input[@"devices"]];
     dispatch_sync(bluetooth.worker, ^{
       bluetooth.central = [[CBCentralManager alloc]
           initWithDelegate:bluetooth
@@ -369,16 +423,13 @@ id as_ble_request(NSDictionary *input, NSError **error) {
   }
   if ([op isEqual:@"ble_close"]) {
     dispatch_sync(b.worker, ^{
-      [b.central stopScan];
-      if (b.peripheral && b.central.state == CBManagerStatePoweredOn)
-        [b.central cancelPeripheralConnection:b.peripheral];
-      b.peripheral.delegate = nil;
+      [b cancelConnections];
+      for (ASConnection *connection in b.connections.allValues)
+        connection.peripheral.delegate = nil;
       b.central.delegate = nil;
-      b.peripheral = nil;
       b.central = nil;
+      [b.connections removeAllObjects];
       [b.devices removeAllObjects];
-      [b.characteristics removeAllObjects];
-      [b.writes removeAllObjects];
       b.closed = YES;
     });
     NSArray *remaining = [b drain];
@@ -387,12 +438,19 @@ id as_ble_request(NSDictionary *input, NSError **error) {
   }
   __block NSError *commandError = nil;
   dispatch_sync(b.worker, ^{
-    if ([op isEqual:@"ble_scan"]) {
+    if ([op isEqual:@"ble_targets"]) {
+      b.targets = [NSSet setWithArray:input[@"devices"]];
+      for (NSString *identifier in b.devices.allKeys)
+        if (![b.targets containsObject:identifier])
+          [b.devices removeObjectForKey:identifier];
+    } else if ([op isEqual:@"ble_scan"]) {
       if (b.central.state != CBManagerStatePoweredOn) {
         commandError = as_failure(@"Bluetooth is not powered on");
         return;
       }
-      [b.devices removeAllObjects];
+      // Restart only when the collector requests discovery (including retries
+      // and added registrations), so duplicate suppression cannot starve them.
+      [b.central stopScan];
       [b.central
           scanForPeripheralsWithServices:nil
                                  options:@{
@@ -402,69 +460,102 @@ id as_ble_request(NSDictionary *input, NSError **error) {
     } else if ([op isEqual:@"ble_stop_scan"]) {
       [b.central stopScan];
     } else if ([op isEqual:@"ble_connect"]) {
-      CBPeripheral *p = b.devices[input[@"device"]];
-      if (!p || b.peripheral) {
-        commandError =
-            as_failure(@"device disappeared or connection already exists");
+      NSString *identifier = input[@"device"];
+      CBPeripheral *peripheral = b.devices[identifier];
+      if (!peripheral || b.connections[identifier] ||
+          (b.targets && ![b.targets containsObject:identifier])) {
+        commandError = as_failure(@"device disappeared, is no longer "
+                                  @"registered, or already has a connection");
         return;
       }
-      b.attempt = [input[@"attempt"] integerValue];
-      b.peripheral = p;
-      p.delegate = b;
-      [b.central connectPeripheral:p options:nil];
-    } else if ([op isEqual:@"ble_disconnect"]) {
-      [b.writes removeAllObjects];
-      if (b.peripheral && b.peripheral.state != CBPeripheralStateDisconnected)
-        [b.central cancelPeripheralConnection:b.peripheral];
-      else
+      ASConnection *connection = [ASConnection new];
+      connection.owner = b;
+      connection.peripheral = peripheral;
+      connection.attempt = [input[@"attempt"] integerValue];
+      b.connections[identifier] = connection;
+      peripheral.delegate = connection;
+      [b.central connectPeripheral:peripheral options:nil];
+    } else {
+      NSString *identifier = input[@"device"];
+      ASConnection *connection = b.connections[identifier];
+      NSInteger attempt = [input[@"attempt"] integerValue];
+      if ([op isEqual:@"ble_disconnect"] && !connection) {
         [b emit:@{
           @"event" : @"disconnected",
-          @"message" : @"already disconnected"
+          @"device" : identifier,
+          @"attempt" : @(attempt),
+          @"message" : @"already disconnected",
+          @"failed" : @NO
         }];
-    } else if ([op isEqual:@"ble_discover"]) {
-      [b.peripheral discoverServices:nil];
-    } else if ([op isEqual:@"ble_subscribe"] || [op isEqual:@"ble_write"]) {
+        return;
+      }
+      if (!connection || connection.attempt != attempt) {
+        commandError = as_failure(@"stale or unavailable Bluetooth connection");
+        return;
+      }
+      if ([op isEqual:@"ble_disconnect"]) {
+        [connection.writes removeAllObjects];
+        if (!connection.disconnecting) {
+          connection.disconnecting = YES;
+          [b.central cancelPeripheralConnection:connection.peripheral];
+        }
+        return;
+      }
+      if (connection.disconnecting ||
+          connection.peripheral.state != CBPeripheralStateConnected) {
+        commandError = as_failure(@"Bluetooth connection is not ready");
+        return;
+      }
+      if ([op isEqual:@"ble_discover"]) {
+        [connection.peripheral discoverServices:nil];
+        return;
+      }
+      if (![op isEqual:@"ble_subscribe"] && ![op isEqual:@"ble_write"]) {
+        commandError = as_failure(@"unknown Bluetooth command");
+        return;
+      }
       NSString *key = [NSString stringWithFormat:@"%@/%@", input[@"service"],
                                                  input[@"characteristic"]];
-      CBCharacteristic *c = b.characteristics[key];
-      if (!c || b.peripheral.state != CBPeripheralStateConnected) {
+      CBCharacteristic *characteristic = connection.characteristics[key];
+      if (!characteristic) {
         commandError = as_failure(@"characteristic is unavailable");
         return;
       }
       if ([op isEqual:@"ble_subscribe"]) {
-        [b.peripheral setNotifyValue:YES forCharacteristic:c];
-      } else {
-        NSString *hex = input[@"hex"];
-        NSMutableData *data = [NSMutableData data];
-        if (hex.length % 2) {
+        [connection.peripheral setNotifyValue:YES
+                            forCharacteristic:characteristic];
+        return;
+      }
+      NSString *hex = input[@"hex"];
+      NSMutableData *data = [NSMutableData data];
+      if (hex.length % 2) {
+        commandError = as_failure(@"invalid write hex");
+        return;
+      }
+      for (NSUInteger i = 0; i < hex.length; i += 2) {
+        unsigned value = 0;
+        NSScanner *scanner = [NSScanner
+            scannerWithString:[hex substringWithRange:NSMakeRange(i, 2)]];
+        if (![scanner scanHexInt:&value] || !scanner.isAtEnd) {
           commandError = as_failure(@"invalid write hex");
           return;
         }
-        for (NSUInteger i = 0; i < hex.length; i += 2) {
-          unsigned value = 0;
-          NSScanner *scanner = [NSScanner
-              scannerWithString:[hex substringWithRange:NSMakeRange(i, 2)]];
-          if (![scanner scanHexInt:&value] || !scanner.isAtEnd) {
-            commandError = as_failure(@"invalid write hex");
-            return;
-          }
-          uint8_t byte = (uint8_t)value;
-          [data appendBytes:&byte length:1];
-        }
-        if (!(c.properties & CBCharacteristicPropertyWriteWithoutResponse) ||
-            data.length >
-                [b.peripheral maximumWriteValueLengthForType:
-                                  CBCharacteristicWriteWithoutResponse] ||
-            b.writes.count >= 16) {
-          commandError = as_failure(
-              @"write is unsupported, too large, or transport queue is full");
-          return;
-        }
-        [b.writes addObject:@{@"data" : data, @"characteristic" : c}];
-        [b flushWrites];
+        uint8_t byte = (uint8_t)value;
+        [data appendBytes:&byte length:1];
       }
-    } else {
-      commandError = as_failure(@"unknown Bluetooth command");
+      if (!(characteristic.properties &
+            CBCharacteristicPropertyWriteWithoutResponse) ||
+          data.length > [connection.peripheral
+                            maximumWriteValueLengthForType:
+                                CBCharacteristicWriteWithoutResponse] ||
+          connection.writes.count >= 16) {
+        commandError = as_failure(
+            @"write is unsupported, too large, or transport queue is full");
+        return;
+      }
+      [connection.writes
+          addObject:@{@"data" : data, @"characteristic" : characteristic}];
+      [connection flushWrites];
     }
   });
   *error = commandError;

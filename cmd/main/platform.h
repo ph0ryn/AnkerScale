@@ -10,5 +10,7 @@ id _Nullable as_ble_request(NSDictionary *_Nonnull input,
                             NSError *_Nullable *_Nonnull error);
 id _Nullable as_service_request(NSDictionary *_Nonnull input,
                                 NSError *_Nullable *_Nonnull error);
+id _Nullable as_registry_request(NSDictionary *_Nonnull input,
+                                 NSError *_Nullable *_Nonnull error);
 
 NS_ASSUME_NONNULL_END

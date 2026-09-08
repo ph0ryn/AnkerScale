@@ -2,13 +2,15 @@
 let help : String =
   #|AnkerScale — local BLE scale recorder for macOS
   #|
-  #|  ankerscale devices [--seconds 10]
-  #|  ankerscale collect --device UUID [--db PATH]
+  #|  ankerscale register [--seconds 10]
+  #|  ankerscale devices [--json]
+  #|  ankerscale unregister
+  #|  ankerscale collect [--db PATH]
   #|  ankerscale latest [--db PATH] [--json]
   #|  ankerscale history [--since DATE] [--until DATE] [--device UUID] [--limit 100] [--json] [--db PATH]
   #|  ankerscale export --format csv|json [--since DATE] [--until DATE] [--device UUID] [--db PATH]
   #|  ankerscale logs [--limit 100] [--db PATH]
-  #|  ankerscale service start --device UUID
+  #|  ankerscale service start
   #|  ankerscale service stop|status
   #|  ankerscale replay FILE.jsonl --db PATH
   #|
@@ -34,15 +36,16 @@ fn parse_options(args : Array[String]) -> Options raise {
     "export" => ["--db", "--since", "--until", "--device", "--format"]
     "logs" => ["--db", "--limit"]
     "replay" => ["--db"]
-    "collect" => ["--db", "--device"]
-    "devices" => ["--seconds"]
-    "service" => ["--device"]
+    "collect" => ["--db"]
+    "register" => ["--seconds"]
+    "devices" | "unregister" => []
+    "service" => []
     _ => raise UsageError("unknown command: \{command}")
   }
   let spec = @argparse.Command(
     "ankerscale \{command}",
     options=allowed.map(flag => @argparse.OptionArg(flag[2:], long=flag[2:])),
-    flags=if command == "latest" || command == "history" {
+    flags=if command == "latest" || command == "history" || command == "devices" {
       [@argparse.FlagArg("json", long="json")]
     } else {
       []
@@ -271,6 +274,7 @@ pub fn run(args : Array[String]) -> Unit raise {
     return
   }
   let options = parse_options(args)
+  ignore(os("signals"))
   let path = match options.values.get("--db") {
     Some(path) => path
     None => string_field(os("paths"), "db")
@@ -278,9 +282,12 @@ pub fn run(args : Array[String]) -> Unit raise {
   match options.command {
     "service" => service(options)
     "devices" => devices(options)
+    "register" => register(options)
+    "unregister" => unregister()
     "collect" => {
-      let target = required(options, "--device")
-      with_db(path, writable=true, db => collect(db, target))
+      let registry = read_registry()
+      require_registered(registry)
+      with_db(path, writable=true, db => collect(db, registry))
     }
     "replay" => {
       ignore(required(options, "--db"))

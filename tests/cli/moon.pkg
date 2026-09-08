@@ -14,7 +14,7 @@ options(
       "cc-flags": "-mmacosx-version-min=14.0",
       "stub-cc": "clang",
       "stub-cc-flags": "-fobjc-arc -Wall -Wextra -Werror -mmacosx-version-min=14.0",
-      "cc-link-flags": "-framework Foundation -framework CoreBluetooth -framework ServiceManagement -lsqlite3",
+      "cc-link-flags": "-framework Foundation -lsqlite3",
     },
   },
 )

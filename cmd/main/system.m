@@ -193,6 +193,10 @@ moonbit_bytes_t as_system_call(moonbit_bytes_t raw) {
       id value = as_service_request(input, &error);
       return reply(value, error);
     }
+    if ([op hasPrefix:@"registry_"]) {
+      id value = as_registry_request(input, &error);
+      return reply(value, error);
+    }
     NSFileManager *fm = NSFileManager.defaultManager;
     if ([op isEqual:@"paths"])
       return reply(@{
@@ -203,11 +207,13 @@ moonbit_bytes_t as_system_call(moonbit_bytes_t raw) {
                    nil);
     if ([op isEqual:@"uuid"])
       return reply(NSUUID.UUID.UUIDString, nil);
+    if ([op isEqual:@"pid"])
+      return reply(@(getpid()), nil);
     if ([op isEqual:@"validate_device"]) {
       NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:input[@"device"]];
       return uuid ? reply(uuid.UUIDString, nil)
                   : reply(nil, as_failure(@"device must be a CoreBluetooth "
-                                          @"UUID from devices"));
+                                          @"UUID"));
     }
     if ([op isEqual:@"now"]) {
       NSCalendar *calendar = [[NSCalendar alloc]
@@ -269,6 +275,36 @@ moonbit_bytes_t as_system_call(moonbit_bytes_t raw) {
                                                      error:&error];
       return reply(value, error);
     }
+    if ([op isEqual:@"signals"]) {
+      struct sigaction action = {0};
+      action.sa_handler = signalStop;
+      sigemptyset(&action.sa_mask);
+      if (sigaction(SIGINT, &action, NULL) != 0 ||
+          sigaction(SIGTERM, &action, NULL) != 0)
+        return reply(nil, as_failure(@"cannot install stop handlers"));
+      return reply(nil, nil);
+    }
+    if ([op isEqual:@"read_line"]) {
+      fflush(stdout);
+      char *line = NULL;
+      size_t capacity = 0;
+      ssize_t length = getline(&line, &capacity, stdin);
+      if (stopping || (length < 0 && feof(stdin))) {
+        free(line);
+        return reply(nil, nil);
+      }
+      if (length < 0) {
+        free(line);
+        return reply(nil, as_failure(@"cannot read selection from stdin"));
+      }
+      NSString *value = [[NSString alloc] initWithBytes:line
+                                                 length:(NSUInteger)length
+                                               encoding:NSUTF8StringEncoding];
+      free(line);
+      if (!value)
+        return reply(nil, as_failure(@"selection must be UTF-8"));
+      return reply(value, nil);
+    }
     if ([op isEqual:@"lock"]) {
       umask(0077);
       writerLock = open([input[@"path"] fileSystemRepresentation],
@@ -293,7 +329,7 @@ moonbit_bytes_t as_system_call(moonbit_bytes_t raw) {
       return reply(nil, nil);
     }
     if ([op isEqual:@"stopping"])
-      return reply(@(stopping != 0), nil);
+      return reply(stopping ? @YES : @NO, nil);
     return reply(nil, as_failure([@"unknown OS operation: "
                           stringByAppendingString:op]));
   }
