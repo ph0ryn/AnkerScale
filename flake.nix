@@ -10,7 +10,12 @@
   };
 
   outputs =
-    { nixpkgs, moonbit-overlay, ... }:
+    {
+      self,
+      nixpkgs,
+      moonbit-overlay,
+      ...
+    }:
     let
       pkgs = import nixpkgs {
         system = "aarch64-darwin";
@@ -62,6 +67,9 @@
       };
     in
     {
+      overlays.default = _final: prev: {
+        ankerscale = self.packages.${prev.stdenv.hostPlatform.system}.default;
+      };
       packages.aarch64-darwin.default = ankerscale;
       checks.aarch64-darwin.default = ankerscale;
       apps.aarch64-darwin.default = {
